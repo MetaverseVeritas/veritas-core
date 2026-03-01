@@ -2,8 +2,8 @@
 ## НЕ КОММИТИТЬ! ТОЛЬКО ЛОКАЛЬНО!
 
 ## TELEGRAM
-BOT_TOKEN = 8295252539:AAHSztYPHhi1UDcgXf_ OneUOSSZ5RBx72Ks
-ADMIN_CHAT_ID = 8693316509
+BOT_TOKEN =
+ADMIN_CHAT_ID =
 BOT_USERNAME = @sus_veritas_bot
 
 ## SUPABASE
@@ -12,7 +12,7 @@ ANON_KEY =
 SERVICE_KEY = 
 
 ## RAILWAY
-PROJECT_URL = railway.app/project/c43ec280-65b5-...
+PROJECT_URL =
 DASHBOARD = railway.app
 
 ## GITHUB
