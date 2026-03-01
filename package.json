@@ -1,7 +1,6 @@
 {
   "name": "veritas-core",
   "version": "1.0.0",
-  "description": "LIBERTAS Core AI",
   "main": "src/bot/index.js",
   "scripts": {
     "start": "node src/bot/index.js"
