@@ -11,6 +11,14 @@ const supabase = createClient(
 const ADMIN_ID = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const isAdmin = (ctx) => String(ctx.from.id) === String(ADMIN_ID);
 
+const MODELS = [
+  'meta-llama/llama-3.2-3b-instruct:free',
+  'mistralai/mistral-7b-instruct:free',
+  'google/gemma-3-1b-it:free',
+  'qwen/qwen-2.5-7b-instruct:free',
+  'microsoft/phi-3-mini-128k-instruct:free'
+];
+
 const KB = {
   roots: 'Aureon Network — L3 ZK-Rollup на Solana. Токен AURA.',
   trunk: 'VERITAS — Метавселенная. Biometric Veritum Passport.',
@@ -22,7 +30,13 @@ const KB = {
   referral: '4 уровня: 10% / 5% / 2% / 1%',
   exchanges: 'Труда, Активов, Реального сектора, Рекламы, P2P',
   agents: 'Claude-Архитектор, DeepSeek-Tech, Perplexity-Аналитик, Grok-Стратегия, Mistral-Маркетинг, Gemini-Документы',
-  todo: ['RLS политики Supabase', 'Helius API ключ', 'Phantom wallet devnet', 'Юрисдикция компании', 'Мониторинг UptimeRobot']
+  todo: [
+    'RLS политики Supabase',
+    'Helius API ключ',
+    'Phantom wallet devnet',
+    'Юрисдикция компании',
+    'Мониторинг UptimeRobot'
+  ]
 };
 
 const mainMenu = Markup.keyboard([
@@ -36,7 +50,7 @@ const mainMenu = Markup.keyboard([
 bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
   ctx.reply(
-    '🤖 *SUS ONLINE v3.0*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\nAI мозг: Mistral Free\n\n💬 Напиши любой текст — отвечу как ИИ!',
+    '🤖 *SUS ONLINE v3.1*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\nAI мозг: 5 моделей auto-switch\n\n💬 Напиши любой текст — отвечу как ИИ!',
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
@@ -96,7 +110,8 @@ bot.hears('🌳 Дерево', (ctx) => {
 bot.hears('🤖 Агенты', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '*🤖 ОРКЕСТР АГЕНТОВ:*\n\n' + KB.agents.split(', ').map(function(a) { return '• ' + a; }).join('\n'),
+    '*🤖 ОРКЕСТР АГЕНТОВ:*\n\n' +
+    KB.agents.split(', ').map(function(a) { return '• ' + a; }).join('\n'),
     { parse_mode: 'Markdown' }
   );
 });
@@ -116,7 +131,7 @@ bot.hears('🔑 Ключи', (ctx) => {
 
 bot.hears('✅ Задача', (ctx) => {
   if (!isAdmin(ctx)) return;
-  ctx.reply('Напиши: /task текст задачи', { parse_mode: 'Markdown' });
+  ctx.reply('Напиши: /task текст задачи');
 });
 
 bot.command('task', async (ctx) => {
@@ -156,7 +171,9 @@ bot.command('done', async (ctx) => {
   const text = ctx.message.text.replace('/done', '').trim();
   if (!text) return ctx.reply('Напиши: /done текст задачи');
   const { data } = await supabase.from('tasks').select('id, description').limit(20);
-  const task = data && data.find(function(t) { return t.description.toLowerCase().includes(text.toLowerCase()); });
+  const task = data && data.find(function(t) {
+    return t.description.toLowerCase().includes(text.toLowerCase());
+  });
   if (!task) return ctx.reply('❌ Задача не найдена: "' + text + '"');
   await supabase.from('tasks').update({ status: 'done' }).eq('id', task.id);
   ctx.reply('✅ Выполнено: "' + task.description + '"');
@@ -188,7 +205,9 @@ bot.command('recall', async (ctx) => {
   if (error) return ctx.reply('❌ Ошибка: ' + error.message);
   if (!data || !data.length) return ctx.reply('❌ По запросу "' + query + '" ничего не найдено');
   let msg = '🔍 *Найдено по "' + query + '":*\n\n';
-  data.forEach(function(k, i) { msg += (i + 1) + '. ' + k.content.substring(0, 200) + '\n\n'; });
+  data.forEach(function(k, i) {
+    msg += (i + 1) + '. ' + k.content.substring(0, 200) + '\n\n';
+  });
   ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
@@ -203,12 +222,13 @@ bot.hears('📚 Знания', (ctx) => {
 bot.hears('❓ Помощь', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '📖 *SUS v3.0 КОМАНДЫ:*\n\n' +
+    '📖 *SUS v3.1 КОМАНДЫ:*\n\n' +
     '/task [текст] — задача\n' +
     '/done [текст] — выполнено\n' +
     '/learn [тема: текст] — обучить\n' +
     '/recall [слово] — найти\n\n' +
-    '💬 Напиши любой текст — отвечу как ИИ!',
+    '💬 Напиши любой текст — отвечу как ИИ!\n' +
+    '🔄 Auto-switch: 5 бесплатных моделей',
     { parse_mode: 'Markdown' }
   );
 });
@@ -230,27 +250,47 @@ bot.on('text', async (ctx) => {
       memoryContext = '\n\nБаза знаний:\n' + memories.map(function(m) { return '- ' + m.content; }).join('\n');
     }
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'mistralai/mistral-7b-instruct:free',
-        messages: [
-          {
-            role: 'system',
-            content: 'Ты SUS — AI ассистент экосистемы LIBERTAS. Отвечай кратко на русском языке.' + memoryContext
-          },
-          { role: 'user', content: userMessage }
-        ]
-      })
-    });
+    let reply = null;
+    let usedModel = null;
 
-    const data = await response.json();
-    const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '❌ Нет ответа от AI';
-    ctx.reply(reply);
+    for (let i = 0; i < MODELS.length; i++) {
+      try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: MODELS[i],
+            messages: [
+              {
+                role: 'system',
+                content: 'Ты SUS — AI ассистент экосистемы LIBERTAS. Отвечай кратко на русском языке.' + memoryContext
+              },
+              { role: 'user', content: userMessage }
+            ]
+          })
+        });
+
+        const data = await response.json();
+        const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+
+        if (text && text.length > 0) {
+          reply = text;
+          usedModel = MODELS[i].split('/')[1];
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (reply) {
+      ctx.reply(reply + '\n\n_(' + usedModel + ')_', { parse_mode: 'Markdown' });
+    } else {
+      ctx.reply('❌ Все модели недоступны. Попробуй позже.');
+    }
 
   } catch (e) {
     ctx.reply('❌ Ошибка: ' + e.message);
@@ -258,7 +298,7 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch({ dropPendingUpdates: true });
-console.log('SUS v3.0 ONLINE - LIBERTAS - Mistral Free');
+console.log('SUS v3.1 ONLINE - LIBERTAS - Auto-switch 5 models');
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
