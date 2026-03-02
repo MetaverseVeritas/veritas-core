@@ -26,7 +26,7 @@ const LIBERTAS_KB = {
     referral: '4 уровня: 10% / 5% / 2% / 1%'
   },
   exchanges: ['Труда', 'Активов', 'Реального сектора', 'Рекламы', 'P2P'],
-  status: { roots: 33, trunk: 25, studio: 25, sus: 78, nft: 35, court: 10 },
+  status: { roots: 33, trunk: 25, studio: 25, sus: 90, nft: 35, court: 10 },
   agents: [
     'Claude — Архитектор (стратегия, этика)',
     'DeepSeek — Tech (Rust/Anchor контракты)',
@@ -36,12 +36,10 @@ const LIBERTAS_KB = {
     'Gemini — Тяжёлые документы'
   ],
   todo: [
-    'OpenRouter API ключ → AI мозг SUS',
     'RLS политики Supabase',
     'Helius API ключ',
     'Phantom wallet devnet',
     'Юрисдикция компании',
-    'Таблица knowledge в Supabase',
     'Мониторинг UptimeRobot'
   ]
 };
@@ -58,7 +56,7 @@ const mainMenu = Markup.keyboard([
 bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
   ctx.reply(
-    `🤖 *SUS ONLINE v2.1*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\n\n` +
+    `🤖 *SUS ONLINE v3.0*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\nAI мозг: Claude Haiku ✅\n\n` +
     `Готовность: 🌱${LIBERTAS_KB.status.roots}% | 🪵${LIBERTAS_KB.status.trunk}% | 🌿${LIBERTAS_KB.status.sus}%`,
     { parse_mode: 'Markdown', ...mainMenu }
   );
@@ -189,7 +187,7 @@ bot.hears('🔑 Ключи', (ctx) => {
     '🔑 *СТАТУС КЛЮЧЕЙ:*\n\n' +
     `Supabase: ${process.env.SUPABASE_URL ? '✅ подключён' : '❌ нет'}\n` +
     `Telegram Bot: ✅ активен\n` +
-    `OpenRouter: ${process.env.OPENROUTER_API_KEY ? '✅' : '❌ нужно создать'}\n` +
+    `OpenRouter: ${process.env.OPENROUTER_API_KEY ? '✅ активен' : '❌ нужно добавить'}\n` +
     `Helius: ${process.env.HELIUS_API_KEY ? '✅' : '❌ нужно создать'}\n\n` +
     `*Ключи храни:* Railway Variables\n` +
     `*НЕ В GitHub!*`,
@@ -197,12 +195,12 @@ bot.hears('🔑 Ключи', (ctx) => {
   );
 });
 
-// ===== 🧠 ОБУЧЕНИЕ SUS =====
+// ===== ОБУЧЕНИЕ SUS =====
 bot.command('learn', async (ctx) => {
   if (!isAdmin(ctx)) return;
   const knowledge = ctx.message.text.replace('/learn', '').trim();
   if (!knowledge) return ctx.reply(
-    '📚 *Как передать знание SUS:*\n\n`/learn тема: содержание`\n\n*Примеры:*\n`/learn токеномика: AURA 1млрд эмиссия`\n`/learn roadmap: Q2 2026 запуск NFT`\n`/learn партнёр: компания X договорились о коллаборации`',
+    '📚 *Как передать знание SUS:*\n\n`/learn тема: содержание`\n\n*Примеры:*\n`/learn токеномика: AURA 1млрд эмиссия`\n`/learn roadmap: Q2 2026 запуск NFT`',
     { parse_mode: 'Markdown' }
   );
 
@@ -212,12 +210,7 @@ bot.command('learn', async (ctx) => {
     created_at: new Date().toISOString()
   });
 
-  if (error) {
-    return ctx.reply(
-      `❌ Ошибка: ${error.message}\n\nСоздай таблицу knowledge в Supabase!`,
-      { parse_mode: 'Markdown' }
-    );
-  }
+  if (error) return ctx.reply(`❌ Ошибка: ${error.message}`);
 
   ctx.reply(
     `🧠 *Знание сохранено!*\n\n"${knowledge.substring(0, 200)}${knowledge.length > 200 ? '...' : ''}"`,
@@ -225,7 +218,7 @@ bot.command('learn', async (ctx) => {
   );
 });
 
-// ===== 🔍 ПОИСК В ЗНАНИЯХ =====
+// ===== ПОИСК В ЗНАНИЯХ =====
 bot.command('recall', async (ctx) => {
   if (!isAdmin(ctx)) return;
   const query = ctx.message.text.replace('/recall', '').trim();
@@ -238,7 +231,7 @@ bot.command('recall', async (ctx) => {
     .order('created_at', { ascending: false })
     .limit(5);
 
-  if (error) return ctx.reply(`❌ Таблица knowledge не создана ещё`);
+  if (error) return ctx.reply(`❌ Ошибка: ${error.message}`);
   if (!data?.length) return ctx.reply(`❌ По запросу *"${query}"* ничего не найдено`, { parse_mode: 'Markdown' });
 
   let msg = `🔍 *Найдено по "${query}":*\n\n`;
@@ -248,7 +241,7 @@ bot.command('recall', async (ctx) => {
   ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// ===== 📚 КНОПКА ЗНАНИЯ =====
+// ===== КНОПКА ЗНАНИЯ =====
 bot.hears('📚 Знания', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
@@ -257,9 +250,8 @@ bot.hears('📚 Знания', (ctx) => {
     '*Найти знание:*\n`/recall ключевое слово`\n\n' +
     '*Примеры:*\n' +
     '`/learn архитектура: VERITAS метавселенная 5 бирж`\n' +
-    '`/learn контакт: Иван Иванов партнёр +7...`\n' +
-    '`/learn идея: NFT даёт доступ к голосованию`\n\n' +
-    '⚠️ Сначала создай таблицу *knowledge* в Supabase!',
+    '`/learn контакт: Иван Иванов партнёр`\n' +
+    '`/learn идея: NFT даёт доступ к голосованию`',
     { parse_mode: 'Markdown' }
   );
 });
@@ -268,7 +260,7 @@ bot.hears('📚 Знания', (ctx) => {
 bot.hears('❓ Помощь', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '📖 *SUS v2.1 КОМАНДЫ:*\n\n' +
+    '📖 *SUS v3.0 КОМАНДЫ:*\n\n' +
     '📊 Статус — готовность экосистемы\n' +
     '🧠 База знаний — проект LIBERTAS\n' +
     '🌳 Дерево — структура экосистемы\n' +
@@ -281,22 +273,59 @@ bot.hears('❓ Помощь', (ctx) => {
     '*/done [текст]* — завершить задачу\n' +
     '*/learn [тема: текст]* — обучить SUS\n' +
     '*/recall [слово]* — найти в памяти\n\n' +
-    '🤖 *SUS v2.1* · LIBERTAS Ecosystem · 02.03.2026',
+    '💬 *Просто напиши текст* — SUS ответит как ИИ!\n\n' +
+    '🤖 *SUS v3.0* · LIBERTAS · Claude Haiku',
     { parse_mode: 'Markdown' }
   );
 });
 
-// ===== ЛЮБОЙ ТЕКСТ =====
-bot.on('text', (ctx) => {
+// ===== ЛЮБОЙ ТЕКСТ → AI =====
+bot.on('text', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Нет доступа');
-  ctx.reply(
-    '🤖 Используй кнопки меню.\n\n*Команды:*\n/task [задача]\n/done [задача]\n/learn [знание]\n/recall [поиск]',
-    { parse_mode: 'Markdown' }
-  );
+
+  const userMessage = ctx.message.text;
+  await ctx.reply('🤔 Думаю...');
+
+  try {
+    // Берём контекст из памяти SUS
+    const { data: memories } = await supabase
+      .from('knowledge')
+      .select('content')
+      .limit(10);
+
+    const memoryContext = memories?.length
+      ? '\n\nБаза знаний SUS:\n' + memories.map(m => '- ' + m.content).join('\n')
+      : '';
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-haiku',
+        messages: [
+          {
+            role: 'system',
+            content: `Ты SUS — AI ассистент экосистемы LIBERTAS. Отвечай кратко и по делу на русском языке.${memoryContext}`
+          },
+          { role: 'user', content: userMessage }
+        ]
+      })
+    });
+
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content || '❌ Нет ответа от AI';
+    ctx.reply(reply);
+
+  } catch (e) {
+    ctx.reply('❌ Ошибка AI: ' + e.message);
+  }
 });
 
 bot.launch({ dropPendingUpdates: true });
-console.log('🤖 SUS v2.1 запущен · LIBERTAS ONLINE · 02.03.2026');
+console.log('🤖 SUS v3.0 запущен · LIBERTAS · Claude Haiku ONLINE');
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
