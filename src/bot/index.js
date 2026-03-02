@@ -12,11 +12,10 @@ const ADMIN_ID = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const isAdmin = (ctx) => String(ctx.from.id) === String(ADMIN_ID);
 
 const MODELS = [
+  'anthropic/claude-haiku-4-5',
+  'openai/gpt-4o-mini',
   'meta-llama/llama-3.2-3b-instruct:free',
-  'mistralai/mistral-7b-instruct:free',
-  'google/gemma-3-1b-it:free',
-  'qwen/qwen-2.5-7b-instruct:free',
-  'microsoft/phi-3-mini-128k-instruct:free'
+  'mistralai/mistral-7b-instruct:free'
 ];
 
 const KB = {
@@ -50,7 +49,7 @@ const mainMenu = Markup.keyboard([
 bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
   ctx.reply(
-    '🤖 *SUS ONLINE v3.1*\n\nАрхитектор, жду команд.\nAI мозг: 5 моделей auto-switch\n\n💬 Напиши любой текст — отвечу как ИИ!',
+    '🤖 *SUS ONLINE v3.2*\n\nАрхитектор, жду команд.\nAI мозг: Claude Haiku + GPT-4o-mini\n\n💬 Напиши любой текст — отвечу как ИИ!',
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
@@ -66,7 +65,7 @@ bot.hears('📊 Статус', async (ctx) => {
     { component: 'Aureon Network', progress: 33 },
     { component: 'VERITAS', progress: 25 },
     { component: 'Veritas Studio', progress: 25 },
-    { component: 'AI SUS', progress: 90 },
+    { component: 'AI SUS', progress: 95 },
     { component: 'NFT система', progress: 35 },
     { component: 'Digital Court', progress: 10 }
   ];
@@ -124,7 +123,7 @@ bot.hears('🔑 Ключи', (ctx) => {
     'Telegram: ✅\n' +
     'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅ есть' : '❌ нет') + '\n' +
     'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n\n' +
-    'Ключ OR: ' + (process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_API_KEY.substring(0,15) + '...' : 'НЕТ'),
+    '*Храни в Railway Variables!*',
     { parse_mode: 'Markdown' }
   );
 });
@@ -219,7 +218,7 @@ bot.hears('📚 Знания', (ctx) => {
 bot.hears('❓ Помощь', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '📖 *SUS v3.1 КОМАНДЫ:*\n\n' +
+    '📖 *SUS v3.2 КОМАНДЫ:*\n\n' +
     '/task [текст] — задача\n' +
     '/done [текст] — выполнено\n' +
     '/learn [тема: текст] — обучить\n' +
@@ -235,7 +234,7 @@ bot.command('aitest', async (ctx) => {
   ctx.reply('🔍 Тестирую соединение с OpenRouter...');
   try {
     const key = process.env.OPENROUTER_API_KEY;
-    if (!key) return ctx.reply('❌ OPENROUTER_API_KEY не найден в переменных!');
+    if (!key) return ctx.reply('❌ OPENROUTER_API_KEY не найден!');
     ctx.reply('✅ Ключ найден: ' + key.substring(0, 20) + '...');
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -244,14 +243,14 @@ bot.command('aitest', async (ctx) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'meta-llama/llama-3.2-3b-instruct:free',
-        messages: [{ role: 'user', content: 'say hi in russian' }]
+        model: 'anthropic/claude-haiku-4-5',
+        messages: [{ role: 'user', content: 'скажи привет' }]
       })
     });
     const text = await response.text();
-    ctx.reply('📡 Ответ сервера: ' + text.substring(0, 500));
+    ctx.reply('📡 Ответ: ' + text.substring(0, 500));
   } catch (e) {
-    ctx.reply('❌ Ошибка fetch: ' + e.message + '\nCause: ' + JSON.stringify(e.cause));
+    ctx.reply('❌ Ошибка: ' + e.message + '\nCause: ' + JSON.stringify(e.cause));
   }
 });
 
@@ -311,7 +310,7 @@ bot.on('text', async (ctx) => {
     if (reply) {
       ctx.reply(reply + '\n\n_(' + usedModel + ')_', { parse_mode: 'Markdown' });
     } else {
-      ctx.reply('❌ Все модели недоступны. Попробуй /aitest для диагностики.');
+      ctx.reply('❌ AI недоступен. Попробуй /aitest для диагностики.');
     }
 
   } catch (e) {
@@ -320,7 +319,7 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch({ dropPendingUpdates: true });
-console.log('SUS v3.1 ONLINE - LIBERTAS - Auto-switch 5 models');
+console.log('SUS v3.2 ONLINE - Claude Haiku + GPT-4o-mini');
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
