@@ -50,7 +50,7 @@ const mainMenu = Markup.keyboard([
 bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
   ctx.reply(
-    '🤖 *SUS ONLINE v3.1*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\nAI мозг: 5 моделей auto-switch\n\n💬 Напиши любой текст — отвечу как ИИ!',
+    '🤖 *SUS ONLINE v3.1*\n\nАрхитектор, жду команд.\nAI мозг: 5 моделей auto-switch\n\n💬 Напиши любой текст — отвечу как ИИ!',
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
@@ -122,9 +122,9 @@ bot.hears('🔑 Ключи', (ctx) => {
     '🔑 *СТАТУС КЛЮЧЕЙ:*\n\n' +
     'Supabase: ' + (process.env.SUPABASE_URL ? '✅' : '❌') + '\n' +
     'Telegram: ✅\n' +
-    'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅' : '❌') + '\n' +
-    'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌ нужно создать') + '\n\n' +
-    '*Храни в Railway Variables!*',
+    'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅ есть' : '❌ нет') + '\n' +
+    'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n\n' +
+    'Ключ OR: ' + (process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_API_KEY.substring(0,15) + '...' : 'НЕТ'),
     { parse_mode: 'Markdown' }
   );
 });
@@ -213,10 +213,7 @@ bot.command('recall', async (ctx) => {
 
 bot.hears('📚 Знания', (ctx) => {
   if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '📚 *ПАМЯТЬ SUS:*\n\n/learn тема: текст\n/recall ключевое слово',
-    { parse_mode: 'Markdown' }
-  );
+  ctx.reply('📚 *ПАМЯТЬ SUS:*\n\n/learn тема: текст\n/recall ключевое слово', { parse_mode: 'Markdown' });
 });
 
 bot.hears('❓ Помощь', (ctx) => {
@@ -226,11 +223,36 @@ bot.hears('❓ Помощь', (ctx) => {
     '/task [текст] — задача\n' +
     '/done [текст] — выполнено\n' +
     '/learn [тема: текст] — обучить\n' +
-    '/recall [слово] — найти\n\n' +
-    '💬 Напиши любой текст — отвечу как ИИ!\n' +
-    '🔄 Auto-switch: 5 бесплатных моделей',
+    '/recall [слово] — найти\n' +
+    '/aitest — тест AI соединения\n\n' +
+    '💬 Напиши любой текст — отвечу как ИИ!',
     { parse_mode: 'Markdown' }
   );
+});
+
+bot.command('aitest', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.reply('🔍 Тестирую соединение с OpenRouter...');
+  try {
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) return ctx.reply('❌ OPENROUTER_API_KEY не найден в переменных!');
+    ctx.reply('✅ Ключ найден: ' + key.substring(0, 20) + '...');
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + key,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.2-3b-instruct:free',
+        messages: [{ role: 'user', content: 'say hi in russian' }]
+      })
+    });
+    const text = await response.text();
+    ctx.reply('📡 Ответ сервера: ' + text.substring(0, 500));
+  } catch (e) {
+    ctx.reply('❌ Ошибка fetch: ' + e.message + '\nCause: ' + JSON.stringify(e.cause));
+  }
 });
 
 bot.on('text', async (ctx) => {
@@ -289,7 +311,7 @@ bot.on('text', async (ctx) => {
     if (reply) {
       ctx.reply(reply + '\n\n_(' + usedModel + ')_', { parse_mode: 'Markdown' });
     } else {
-      ctx.reply('❌ Все модели недоступны. Попробуй позже.');
+      ctx.reply('❌ Все модели недоступны. Попробуй /aitest для диагностики.');
     }
 
   } catch (e) {
