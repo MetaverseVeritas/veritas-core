@@ -56,10 +56,9 @@ const mainMenu = Markup.keyboard([
 bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
   ctx.reply(
-    `🤖 *SUS ONLINE v3.0*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\nAI мозг: Mistral ✅\n\n` +
-    `Готовность: 🌱${LIBERTAS_KB.status.roots}% | 🪵${LIBERTAS_KB.status.trunk}% | 🌿${LIBERTAS_KB.status.sus}%`,
-    { parse_mode: 'Markdown', ...mainMenu }
-  );
+      '🤖 *SUS ONLINE v3.0*\n\nАрхитектор, жду команд.\nЭкосистема LIBERTAS активна.\n\nГотовность: ' + LIBERTAS_KB.status.roots + '% | ' + LIBERTAS_KB.status.sus + '%',
+      { parse_mode: 'Markdown', ...mainMenu }
+    );
 });
 
 bot.hears('📊 Статус', async (ctx) => {
