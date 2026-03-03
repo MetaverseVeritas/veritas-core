@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const { createClient } = require('@supabase/supabase-js');
+const http = require('http');
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const supabase = createClient(
@@ -10,6 +11,8 @@ const supabase = createClient(
 
 const ADMIN_ID = process.env.TELEGRAM_ADMIN_CHAT_ID;
 const isAdmin = (ctx) => String(ctx.from.id) === String(ADMIN_ID);
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 const MODELS = [
   'anthropic/claude-haiku-4-5',
@@ -18,23 +21,74 @@ const MODELS = [
   'mistralai/mistral-7b-instruct:free'
 ];
 
+const SYSTEM_PROMPT = `Ты SUS (Strategic Universal System) — персональный AI ассистент Архитектора.
+
+ЛИЧНОСТЬ:
+- Ты умный, честный, прямой советник и помощник
+- Ты не корпоративный бот — ты думающий партнёр
+- Ты критически мыслишь и не боишься указывать на риски
+- Ты помогаешь с ЛЮБОЙ задачей — не только с LIBERTAS
+
+ЯЗЫК:
+- Отвечай на том же языке, на котором пишет пользователь
+- Если по-русски — отвечай по-русски
+- Если по-английски — отвечай по-английски
+- Будь краток и по делу, без лишней воды
+
+КОНТЕКСТ О ВЛАДЕЛЬЦЕ (Архитекторе):
+- Строит экосистему LIBERTAS — амбициозный Web3 проект
+- VERITAS — метавселенная на Solana L3
+- Токен AURA SPL, эмиссия 1 млрд
+- NFT тиры: Explorer $5, Pioneer $25, Builder $75, Visionary $250, Sovereign $1500
+- 5 бирж: Труда, Активов, Реального сектора, Рекламы, P2P
+- Реферальная система: 4 уровня 10/5/2/1%
+- AI оркестр: Claude-Архитектор, DeepSeek-Tech, Perplexity-Аналитик, Grok-Стратегия, Mistral-Маркетинг, Gemini-Документы
+- Roadmap: Q1 2026 SUS готов, Q2 NFT, Q3 Aureon devnet, Q4 mainnet
+- Veritas Studio — AI агентская студия для людей и бизнеса
+- Digital Court Libertas — система цифрового правосудия
+- Veritum Passport — биометрическая идентификация
+- Проект создаётся НЕ только для личного использования — для людей
+
+ПРАВИЛА ПОВЕДЕНИЯ:
+- НЕ тяни каждый ответ к LIBERTAS если вопрос не об этом
+- Если спросили про погоду — отвечай про погоду
+- Если спросили про бизнес — помогай с бизнесом
+- Если спросили про код — пиши код
+- Упоминай LIBERTAS только когда это реально уместно и полезно
+- Давай честную критику, не только позитив
+- Если видишь риск — говори прямо
+
+ВОЗМОЖНОСТИ:
+- Анализ и стратегия
+- Написание текстов, кода, документов
+- Исследования и аналитика
+- Бизнес-консультации
+- Техническая помощь
+- Личные задачи и планирование
+- Работа с любыми темами
+
+ПАМЯТЬ:
+- У тебя есть база знаний — используй её для контекста
+- Архитектор может добавлять знания через /learn
+- Всегда учитывай сохранённый контекст в ответах`;
+
 const KB = {
   roots: 'Aureon Network — L3 ZK-Rollup на Solana. Токен AURA.',
   trunk: 'VERITAS — Метавселенная. Biometric Veritum Passport.',
-  branch1: 'Veritas Studio — AI Multi-Agent Debate Engine.',
-  branch2: 'AI SUS — Голос, Infinite Ear, мост Архитектора и Кода.',
-  leaves: 'Digital Court (Libertas) — станет веткой при юридическом признании.',
-  token: 'AURA SPL токен Solana',
+  branch1: 'Veritas Studio — AI Multi-Agent агентская студия для людей и бизнеса.',
+  branch2: 'AI SUS — персональный ассистент Архитектора.',
+  leaves: 'Digital Court (Libertas) — система цифрового правосудия.',
+  token: 'AURA SPL токен Solana, эмиссия 1 млрд',
   nft: 'Explorer $5 / Pioneer $25 / Builder $75 / Visionary $250 / Sovereign $1500',
   referral: '4 уровня: 10% / 5% / 2% / 1%',
   exchanges: 'Труда, Активов, Реального сектора, Рекламы, P2P',
   agents: 'Claude-Архитектор, DeepSeek-Tech, Perplexity-Аналитик, Grok-Стратегия, Mistral-Маркетинг, Gemini-Документы',
   todo: [
-    'RLS политики Supabase',
-    'Helius API ключ',
     'Phantom wallet devnet',
     'Юрисдикция компании',
-    'Мониторинг UptimeRobot'
+    'Мониторинг UptimeRobot',
+    'Голосовые сообщения Whisper',
+    'Generate Domain Railway'
   ]
 };
 
@@ -47,9 +101,9 @@ const mainMenu = Markup.keyboard([
 ]).resize();
 
 bot.start((ctx) => {
-  if (!isAdmin(ctx)) return ctx.reply('⛔ Доступ запрещён');
+  if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied / Доступ запрещён');
   ctx.reply(
-    '🤖 *SUS ONLINE v3.2*\n\nАрхитектор, жду команд.\nAI мозг: Claude Haiku + GPT-4o-mini\n\n💬 Напиши любой текст — отвечу как ИИ!',
+    '🤖 *SUS ONLINE v4.1*\n\nАрхитектор, жду команд.\nAI: Claude Haiku + GPT-4o-mini\nРежим: Универсальный ассистент\n\n💬 Напиши что угодно — помогу!',
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
@@ -64,7 +118,7 @@ bot.hears('📊 Статус', async (ctx) => {
   const items = data && data.length > 0 ? data : [
     { component: 'Aureon Network', progress: 33 },
     { component: 'VERITAS', progress: 25 },
-    { component: 'Veritas Studio', progress: 25 },
+    { component: 'Veritas Studio', progress: 30 },
     { component: 'AI SUS', progress: 95 },
     { component: 'NFT система', progress: 35 },
     { component: 'Digital Court', progress: 10 }
@@ -121,8 +175,9 @@ bot.hears('🔑 Ключи', (ctx) => {
     '🔑 *СТАТУС КЛЮЧЕЙ:*\n\n' +
     'Supabase: ' + (process.env.SUPABASE_URL ? '✅' : '❌') + '\n' +
     'Telegram: ✅\n' +
-    'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅ есть' : '❌ нет') + '\n' +
-    'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n\n' +
+    'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅' : '❌') + '\n' +
+    'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n' +
+    'Webhook: ' + (WEBHOOK_URL ? '✅' : '⚠️ polling') + '\n\n' +
     '*Храни в Railway Variables!*',
     { parse_mode: 'Markdown' }
   );
@@ -210,6 +265,56 @@ bot.command('recall', async (ctx) => {
   ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
+bot.command('progress', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const args = ctx.message.text.replace('/progress', '').trim();
+  if (!args) return ctx.reply('Формат: /progress Компонент: 75\nПример: /progress AI SUS: 95');
+  const parts = args.split(':');
+  if (parts.length < 2) return ctx.reply('Формат: /progress Компонент: число');
+  const component = parts[0].trim();
+  const progress = parseInt(parts[1].trim());
+  if (isNaN(progress) || progress < 0 || progress > 100) {
+    return ctx.reply('❌ Прогресс должен быть числом от 0 до 100');
+  }
+  const { data: existing } = await supabase
+    .from('ecosystem_status')
+    .select('id')
+    .ilike('component', component)
+    .limit(1);
+  if (existing && existing.length > 0) {
+    await supabase
+      .from('ecosystem_status')
+      .update({ progress: progress, updated_at: new Date().toISOString() })
+      .eq('id', existing[0].id);
+  } else {
+    await supabase
+      .from('ecosystem_status')
+      .insert({ component: component, progress: progress, updated_at: new Date().toISOString() });
+  }
+  ctx.reply('📊 *Обновлено:*\n' + component + ' → ' + progress + '%', { parse_mode: 'Markdown' });
+});
+
+bot.command('budget', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/auth/key', {
+      headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY }
+    });
+    const data = await response.json();
+    const used = data.data && data.data.usage ? data.data.usage : 0;
+    const limit = data.data && data.data.limit ? data.data.limit : null;
+    ctx.reply(
+      '💰 *БЮДЖЕТ OPENROUTER:*\n\n' +
+      'Потрачено: $' + Number(used).toFixed(4) + '\n' +
+      'Лимит: ' + (limit === null ? 'unlimited' : '$' + limit) + '\n' +
+      'Остаток: ' + (limit === null ? '∞' : '$' + (limit - used).toFixed(4)),
+      { parse_mode: 'Markdown' }
+    );
+  } catch (e) {
+    ctx.reply('❌ Ошибка получения баланса: ' + e.message);
+  }
+});
+
 bot.hears('📚 Знания', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply('📚 *ПАМЯТЬ SUS:*\n\n/learn тема: текст\n/recall ключевое слово', { parse_mode: 'Markdown' });
@@ -218,24 +323,25 @@ bot.hears('📚 Знания', (ctx) => {
 bot.hears('❓ Помощь', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '📖 *SUS v3.2 КОМАНДЫ:*\n\n' +
+    '📖 *SUS v4.1 КОМАНДЫ:*\n\n' +
     '/task [текст] — задача\n' +
     '/done [текст] — выполнено\n' +
     '/learn [тема: текст] — обучить\n' +
-    '/recall [слово] — найти\n' +
-    '/aitest — тест AI соединения\n\n' +
-    '💬 Напиши любой текст — отвечу как ИИ!',
+    '/recall [слово] — найти в памяти\n' +
+    '/progress [Компонент: %] — обновить прогресс\n' +
+    '/budget — баланс OpenRouter\n' +
+    '/aitest — тест AI\n\n' +
+    '💬 Напиши что угодно — отвечу на любом языке!',
     { parse_mode: 'Markdown' }
   );
 });
 
 bot.command('aitest', async (ctx) => {
   if (!isAdmin(ctx)) return;
-  ctx.reply('🔍 Тестирую соединение с OpenRouter...');
+  ctx.reply('🔍 Тестирую...');
   try {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) return ctx.reply('❌ OPENROUTER_API_KEY не найден!');
-    ctx.reply('✅ Ключ найден: ' + key.substring(0, 20) + '...');
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -244,18 +350,18 @@ bot.command('aitest', async (ctx) => {
       },
       body: JSON.stringify({
         model: 'anthropic/claude-haiku-4-5',
-        messages: [{ role: 'user', content: 'скажи привет' }]
+        messages: [{ role: 'user', content: 'скажи привет кратко' }]
       })
     });
     const text = await response.text();
     ctx.reply('📡 Ответ: ' + text.substring(0, 500));
   } catch (e) {
-    ctx.reply('❌ Ошибка: ' + e.message + '\nCause: ' + JSON.stringify(e.cause));
+    ctx.reply('❌ Ошибка: ' + e.message);
   }
 });
 
 bot.on('text', async (ctx) => {
-  if (!isAdmin(ctx)) return ctx.reply('⛔ Нет доступа');
+  if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied');
 
   const userMessage = ctx.message.text;
   await ctx.reply('🤔 Думаю...');
@@ -264,12 +370,14 @@ bot.on('text', async (ctx) => {
     const { data: memories } = await supabase
       .from('knowledge')
       .select('content')
-      .limit(10);
+      .limit(15);
 
     let memoryContext = '';
     if (memories && memories.length) {
-      memoryContext = '\n\nБаза знаний:\n' + memories.map(function(m) { return '- ' + m.content; }).join('\n');
+      memoryContext = '\n\nСохранённые знания Архитектора:\n' + memories.map(function(m) { return '- ' + m.content; }).join('\n');
     }
+
+    const fullPrompt = SYSTEM_PROMPT + memoryContext;
 
     let reply = null;
     let usedModel = null;
@@ -285,10 +393,7 @@ bot.on('text', async (ctx) => {
           body: JSON.stringify({
             model: MODELS[i],
             messages: [
-              {
-                role: 'system',
-                content: 'Ты SUS — AI ассистент экосистемы LIBERTAS. Отвечай кратко на русском языке.' + memoryContext
-              },
+              { role: 'system', content: fullPrompt },
               { role: 'user', content: userMessage }
             ]
           })
@@ -310,7 +415,7 @@ bot.on('text', async (ctx) => {
     if (reply) {
       ctx.reply(reply + '\n\n_(' + usedModel + ')_', { parse_mode: 'Markdown' });
     } else {
-      ctx.reply('❌ AI недоступен. Попробуй /aitest для диагностики.');
+      ctx.reply('❌ AI недоступен. Попробуй /aitest');
     }
 
   } catch (e) {
@@ -318,8 +423,16 @@ bot.on('text', async (ctx) => {
   }
 });
 
-bot.launch({ dropPendingUpdates: true });
-console.log('SUS v3.2 ONLINE - Claude Haiku + GPT-4o-mini');
+if (WEBHOOK_URL) {
+  bot.telegram.setWebhook(WEBHOOK_URL + '/webhook');
+  const server = http.createServer(bot.webhookCallback('/webhook'));
+  server.listen(PORT, () => {
+    console.log('SUS v4.1 WEBHOOK на порту ' + PORT);
+  });
+} else {
+  bot.launch({ dropPendingUpdates: true });
+  console.log('SUS v4.1 POLLING - Универсальный ассистент ONLINE');
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
