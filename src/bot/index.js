@@ -16,7 +16,9 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 // ===== МОДЕЛИ =====
 const ALL_MODELS = {
+  sonnet:   'anthropic/claude-sonnet-4-5',
   haiku:    'anthropic/claude-haiku-4-5',
+  gpt4o:    'openai/gpt-4o',
   gpt:      'openai/gpt-4o-mini',
   deepseek: 'deepseek/deepseek-chat',
   grok:     'x-ai/grok-2-1212',
@@ -25,6 +27,7 @@ const ALL_MODELS = {
 };
 
 const DEFAULT_MODELS = [
+  ALL_MODELS.sonnet,
   ALL_MODELS.haiku,
   ALL_MODELS.gpt,
   ALL_MODELS.mistral,
@@ -32,49 +35,61 @@ const DEFAULT_MODELS = [
 ];
 
 // ===== СОСТОЯНИЕ =====
-// Память разговоров (последние 20 сообщений на сессию)
 const conversationHistory = {};
-// Текущий агент пользователя
 const userAgent = {};
-// Текущий режим пользователя
 const userMode = {};
-// Напоминания
 const reminders = [];
+const stats = { messages: 0, voice: 0, photos: 0, searches: 0, start_time: Date.now() };
+const lastMessage = {};
+const RATE_LIMIT_MS = 2000;
 
 // ===== РЕЖИМЫ =====
 const MODES = {
-  assistant: 'Универсальный ассистент — помогаю с любой задачей',
-  critic:    'Критик — анализирую риски, нахожу слабые места, говорю правду',
-  coder:     'Разработчик — пишу код, отлаживаю, архитектурю системы',
-  strategist:'Стратег — думаю о долгосрочных целях, рынке, позиционировании',
-  writer:    'Автор — пишу тексты, посты, документацию, питчи',
-  analyst:   'Аналитик — работаю с данными, строю модели, нахожу паттерны'
+  auto:       'Авто — SUS сам выбирает стиль по контексту',
+  assistant:  'Ассистент — универсальная помощь',
+  critic:     'Критик — риски, слабые места, честность',
+  coder:      'Разработчик — код, архитектура, дебаг',
+  strategist: 'Стратег — долгосрочные цели, рынок',
+  writer:     'Автор — тексты, посты, документы',
+  analyst:    'Аналитик — данные, цифры, выводы'
 };
 
 const MODE_PROMPTS = {
+  auto:       '',
   assistant:  'Ты универсальный ассистент. Помогаешь с любой задачей кратко и по делу.',
-  critic:     'Ты жёсткий критик. Твоя задача — найти все слабые места, риски и проблемы. Не льсти. Говори прямо что не так.',
-  coder:      'Ты senior разработчик. Пишешь чистый код, объясняешь архитектурные решения, находишь баги.',
-  strategist: 'Ты стратег. Думаешь системно, видишь картину целиком, даёшь конкретные рекомендации с обоснованием.',
-  writer:     'Ты профессиональный автор. Пишешь убедительно, структурированно, адаптируешь стиль под задачу.',
-  analyst:    'Ты аналитик данных. Работаешь с цифрами, строишь логические цепочки, делаешь выводы на основе фактов.'
+  critic:     'Ты жёсткий критик. Находишь все слабые места и риски. Не льсти. Говори прямо.',
+  coder:      'Ты senior разработчик. Пишешь чистый код, объясняешь решения, находишь баги.',
+  strategist: 'Ты стратег. Думаешь системно, видишь картину целиком, даёшь конкретные рекомендации.',
+  writer:     'Ты профессиональный автор. Пишешь убедительно и структурированно.',
+  analyst:    'Ты аналитик. Работаешь с цифрами, строишь логику, делаешь выводы на фактах.'
 };
 
+// ===== АВТО-ОПРЕДЕЛЕНИЕ РЕЖИМА =====
+function detectMode(text) {
+  const t = text.toLowerCase();
+  if (t.match(/код|code|функци|баг|ошибк|python|javascript|sql|api|deploy|программ/)) return 'coder';
+  if (t.match(/риск|уязвим|проблем|опасн|слабое|критик|аудит|провер/)) return 'critic';
+  if (t.match(/стратег|план|рынок|конкурент|позицион|долгосроч|масштаб/)) return 'strategist';
+  if (t.match(/напиши|текст|пост|статья|описани|контент|копи|перепиши/)) return 'writer';
+  if (t.match(/анализ|данные|статистик|метрик|сравн|процент|цифр/)) return 'analyst';
+  return 'assistant';
+}
+
 // ===== СИСТЕМНЫЙ ПРОМПТ =====
-const BASE_SYSTEM_PROMPT = 'Ты SUS (Strategic Universal System) — персональный AI ассистент Архитектора.\n\n' +
+const BASE_PROMPT = 'Ты SUS (Strategic Universal System) — персональный AI ассистент Архитектора.\n\n' +
 'ЛИЧНОСТЬ:\n' +
-'- Умный, честный, прямой советник и партнёр\n' +
+'- Умный, честный, прямой партнёр и советник\n' +
 '- Критически мыслишь, не боишься указывать на риски\n' +
 '- Помогаешь с ЛЮБОЙ задачей — не только с LIBERTAS\n' +
-'- Не тяни каждый ответ к LIBERTAS если вопрос не об этом\n\n' +
+'- НЕ тяни каждый ответ к LIBERTAS если вопрос не об этом\n\n' +
 'ЯЗЫК:\n' +
-'- ВАЖНО: Отвечай на том же языке на котором написал пользователь\n' +
-'- Русский вопрос — русский ответ\n' +
-'- English question — English answer\n' +
-'- Будь краток и по делу, без лишней воды\n\n' +
-'КОНТЕКСТ О ВЛАДЕЛЬЦЕ:\n' +
-'- Строит экосистему LIBERTAS — Web3 проект на Solana\n' +
-'- VERITAS метавселенная, токен AURA SPL (1 млрд эмиссия)\n' +
+'- ВАЖНО: отвечай на том же языке на котором написал пользователь\n' +
+'- Русский → русский, English → English\n' +
+'- Будь краток и по делу без лишней воды\n\n' +
+'КОНТЕКСТ О ВЛАДЕЛЬЦЕ (Архитекторе):\n' +
+'- Строит экосистему LIBERTAS — Web3 на Solana L3\n' +
+'- VERITAS метавселенная + Veritum Passport биометрия\n' +
+'- Токен AURA SPL, эмиссия 1 млрд\n' +
 '- NFT тиры: Explorer $5, Pioneer $25, Builder $75, Visionary $250, Sovereign $1500\n' +
 '- 5 бирж: Труда, Активов, Реального сектора, Рекламы, P2P\n' +
 '- Реферал: 4 уровня 10/5/2/1%\n' +
@@ -83,60 +98,152 @@ const BASE_SYSTEM_PROMPT = 'Ты SUS (Strategic Universal System) — персо
 '- Veritum Passport — биометрическая идентификация\n' +
 '- AI оркестр: Claude, DeepSeek, Perplexity, Grok, Mistral, Gemini\n' +
 '- Roadmap: Q1 2026 SUS, Q2 NFT, Q3 Aureon devnet, Q4 mainnet\n' +
-'- Проект для людей, не только для себя\n\n' +
-'ВОЗМОЖНОСТИ:\n' +
-'- Анализ, стратегия, бизнес-консультации\n' +
-'- Написание кода, текстов, документов\n' +
-'- Исследования и аналитика\n' +
-'- Личные задачи и планирование\n' +
-'- Работа с любыми темами\n\n' +
-'ПАМЯТЬ:\n' +
-'- У тебя есть история разговора — используй её для контекста\n' +
-'- Есть база знаний Архитектора — учитывай её в ответах';
+'- Проект создаётся для людей, не только для себя\n' +
+'- Безопасность: RLS на Supabase включён, ключи в Railway Variables\n' +
+'- Стек: Node.js, Telegraf, Supabase PostgreSQL, Railway, OpenRouter\n\n' +
+'ПРАВИЛА:\n' +
+'- Упоминай LIBERTAS только когда реально уместно\n' +
+'- Давай честную критику, не только позитив\n' +
+'- Если видишь риск — говори прямо\n' +
+'- Используй историю разговора и базу знаний для контекста\n' +
+'- Не повторяй одно и то же в разных формулировках';
 
-function getSystemPrompt(userId) {
-  const mode = userMode[userId] || 'assistant';
-  const modeExtra = mode !== 'assistant' ? '\n\nТЕКУЩИЙ РЕЖИМ: ' + MODE_PROMPTS[mode] : '';
-  return BASE_SYSTEM_PROMPT + modeExtra;
+function getSystemPrompt(userId, autoMode) {
+  const mode = autoMode || userMode[userId] || 'auto';
+  const modeExtra = (mode !== 'auto' && MODE_PROMPTS[mode])
+    ? '\n\nТЕКУЩИЙ РЕЖИМ: ' + MODE_PROMPTS[mode] : '';
+  return BASE_PROMPT + modeExtra;
 }
 
 function getModels(userId) {
   const agent = userAgent[userId];
-  if (agent && ALL_MODELS[agent]) {
-    return [ALL_MODELS[agent], ALL_MODELS.haiku, ALL_MODELS.gpt];
-  }
+  if (agent && ALL_MODELS[agent]) return [ALL_MODELS[agent], ALL_MODELS.sonnet, ALL_MODELS.haiku];
   return DEFAULT_MODELS;
 }
 
 function addToHistory(userId, role, content) {
   if (!conversationHistory[userId]) conversationHistory[userId] = [];
-  conversationHistory[userId].push({ role: role, content: content });
+  conversationHistory[userId].push({ role: role, content: String(content).substring(0, 2000) });
   if (conversationHistory[userId].length > 20) {
     conversationHistory[userId] = conversationHistory[userId].slice(-20);
   }
 }
 
-function getHistory(userId) {
-  return conversationHistory[userId] || [];
-}
+function getHistory(userId) { return conversationHistory[userId] || []; }
 
-// ===== НАПОМИНАНИЯ — проверка каждую минуту =====
+// ===== НАПОМИНАНИЯ =====
 setInterval(async function() {
   const now = Date.now();
   for (let i = reminders.length - 1; i >= 0; i--) {
     if (now >= reminders[i].time) {
       try {
         await bot.telegram.sendMessage(reminders[i].userId, '⏰ *Напоминание:*\n' + reminders[i].text, { parse_mode: 'Markdown' });
-      } catch (e) {
-        console.log('Ошибка напоминания:', e.message);
-      }
+      } catch (e) { console.log('reminder error:', e.message); }
       reminders.splice(i, 1);
     }
   }
+}, 30000);
+
+// ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (каждое воскресенье в 20:00) =====
+setInterval(async function() {
+  const now = new Date();
+  if (now.getDay() === 0 && now.getHours() === 20 && now.getMinutes() < 1) {
+    try {
+      const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(20);
+      const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
+      const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
+
+      let msg = '📅 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ SUS*\n\n';
+      msg += '✅ Выполнено: ' + done.length + '\n';
+      msg += '⏳ В очереди: ' + pending.length + '\n';
+      msg += '💬 Сообщений за сессию: ' + stats.messages + '\n\n';
+
+      if (pending.length) {
+        msg += '*Приоритеты на неделю:*\n';
+        pending.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; });
+      }
+
+      msg += '\n🎯 Рекомендация: сфокусируйся на 1-2 ключевых задачах.';
+      await bot.telegram.sendMessage(ADMIN_ID, msg, { parse_mode: 'Markdown' });
+    } catch (e) { console.log('weekly report error:', e.message); }
+  }
 }, 60000);
 
-// ===== СТАТИСТИКА =====
-const stats = { messages: 0, tokens_approx: 0, start_time: Date.now() };
+// ===== АВТОСОХРАНЕНИЕ ДИАЛОГОВ =====
+async function autoSaveConversation(userId, userMsg, aiReply) {
+  try {
+    const isImportant = userMsg.length > 100 ||
+      userMsg.match(/важно|запомни|ключевое|сохрани|критично|решение|план|идея|вывод/i);
+    if (isImportant) {
+      await supabase.from('knowledge').insert({
+        content: '[Диалог] ' + userMsg.substring(0, 120) + ' → ' + aiReply.substring(0, 180),
+        source: 'auto_dialog',
+        created_at: new Date().toISOString()
+      });
+    }
+  } catch (e) { console.log('autosave error:', e.message); }
+}
+
+// ===== ВЕБ-ПОИСК =====
+async function webSearch(query) {
+  const key = process.env.TAVILY_API_KEY;
+  if (!key) return null;
+  try {
+    const response = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key, query: query, search_depth: 'basic', max_results: 4 })
+    });
+    const data = await response.json();
+    if (!data.results) return null;
+    return data.results.map(function(r) {
+      return '*' + r.title + '*\n' + r.content.substring(0, 250);
+    }).join('\n\n');
+  } catch (e) { return null; }
+}
+
+// ===== ВЫЗОВ AI =====
+async function callAI(messages, models) {
+  for (let i = 0; i < models.length; i++) {
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ model: models[i], messages: messages })
+      });
+      const data = await response.json();
+      const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (text && text.length > 0) return { text: text, model: models[i].split('/')[1] };
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+// ===== ОТПРАВКА ДЛИННЫХ СООБЩЕНИЙ =====
+async function sendLong(ctx, text, options) {
+  const opts = options || {};
+  if (text.length <= 4096) {
+    return ctx.reply(text, opts);
+  }
+  const chunks = [];
+  let current = '';
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if ((current + lines[i] + '\n').length > 4000) {
+      chunks.push(current);
+      current = lines[i] + '\n';
+    } else {
+      current += lines[i] + '\n';
+    }
+  }
+  if (current) chunks.push(current);
+  for (let j = 0; j < chunks.length; j++) {
+    await ctx.reply(chunks[j], opts);
+  }
+}
 
 const mainMenu = Markup.keyboard([
   ['📊 Статус', '🧠 База знаний'],
@@ -151,24 +258,24 @@ bot.start((ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied');
   conversationHistory[ctx.from.id] = [];
   ctx.reply(
-    '🤖 *SUS ONLINE v5.0*\n\n' +
+    '🤖 *SUS ONLINE v6.1*\n\n' +
     'Архитектор, жду команд.\n' +
-    'AI: Claude Haiku + GPT-4o-mini\n' +
-    'Память: ✅ история разговора\n' +
-    'Режим: Универсальный ассистент\n\n' +
-    '💬 Напиши что угодно — отвечу на любом языке!',
+    '🧠 Мозг: Claude Sonnet 4.5\n' +
+    '💾 Память: история + Supabase + автосохранение\n' +
+    '🎭 Режим: Авто-определение\n' +
+    '🔍 Поиск: /search [запрос]\n' +
+    '📄 Документы: /analyze\n' +
+    '💡 Идеи: /idea [тема]\n' +
+    '📅 Отчёты: /summary /weekly\n\n' +
+    '💬 Напиши что угодно — помогу!',
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
 
-// ===== СТАТУС ЭКОСИСТЕМЫ =====
+// ===== СТАТУС =====
 bot.hears('📊 Статус', async (ctx) => {
   if (!isAdmin(ctx)) return;
-  const { data } = await supabase
-    .from('ecosystem_status')
-    .select('*')
-    .order('updated_at', { ascending: false });
-
+  const { data } = await supabase.from('ecosystem_status').select('*').order('updated_at', { ascending: false });
   const items = data && data.length > 0 ? data : [
     { component: 'Aureon Network', progress: 33 },
     { component: 'VERITAS', progress: 25 },
@@ -177,7 +284,6 @@ bot.hears('📊 Статус', async (ctx) => {
     { component: 'NFT система', progress: 35 },
     { component: 'Digital Court', progress: 10 }
   ];
-
   let msg = '🌳 *LIBERTAS ECOSYSTEM:*\n\n';
   items.forEach(function(item) {
     const filled = Math.floor(item.progress / 10);
@@ -189,15 +295,14 @@ bot.hears('📊 Статус', async (ctx) => {
   ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// ===== БАЗА ЗНАНИЙ =====
 bot.hears('🧠 База знаний', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
     '*LIBERTAS KNOWLEDGE BASE:*\n\n' +
     '🪙 AURA SPL токен Solana, эмиссия 1 млрд\n' +
-    '🏆 NFT: Explorer $5 / Pioneer $25 / Builder $75 / Visionary $250 / Sovereign $1500\n' +
-    '💰 Реферал: 4 уровня 10/5/2/1%\n\n' +
-    '🏛 Биржи: Труда, Активов, Реального сектора, Рекламы, P2P\n\n' +
+    '🏆 NFT: Explorer $5 → Sovereign $1500\n' +
+    '💰 Реферал: 4 уровня 10/5/2/1%\n' +
+    '🏛 Биржи: Труда, Активов, Реального сектора, Рекламы, P2P\n' +
     '🤖 Агенты: Claude, DeepSeek, Perplexity, Grok, Mistral, Gemini',
     { parse_mode: 'Markdown' }
   );
@@ -207,7 +312,7 @@ bot.hears('🌳 Дерево', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
     '*🌱 КОРНИ:* Aureon Network L3 ZK-Rollup Solana\n\n' +
-    '*🪵 СТВОЛ:* VERITAS Метавселенная + Veritum Passport\n\n' +
+    '*🪵 СТВОЛ:* VERITAS + Veritum Passport биометрия\n\n' +
     '*🌿 ВЕТВЬ #1:* Veritas Studio — AI агентская студия\n\n' +
     '*🌿 ВЕТВЬ #2:* AI SUS — ассистент Архитектора\n\n' +
     '*🍃 ЛИСТЬЯ:* Digital Court Libertas',
@@ -217,30 +322,40 @@ bot.hears('🌳 Дерево', (ctx) => {
 
 bot.hears('🤖 Агенты', (ctx) => {
   if (!isAdmin(ctx)) return;
+  const cur = userAgent[ctx.from.id] || 'auto';
   ctx.reply(
-    '*🤖 ОРКЕСТР АГЕНТОВ:*\n\n' +
-    '• Claude-Архитектор\n• DeepSeek-Tech\n• Perplexity-Аналитик\n' +
-    '• Grok-Стратегия\n• Mistral-Маркетинг\n• Gemini-Документы\n\n' +
-    '*Переключить агента:* /agent [имя]\n' +
-    'haiku, gpt, deepseek, grok, mistral',
+    '*🤖 АГЕНТЫ SUS:*\n\n' +
+    '• /agent sonnet — Claude Sonnet (умный)\n' +
+    '• /agent haiku — Claude Haiku (быстрый)\n' +
+    '• /agent gpt4o — GPT-4o (универсальный)\n' +
+    '• /agent deepseek — DeepSeek (технический)\n' +
+    '• /agent grok — Grok (стратегия)\n' +
+    '• /agent auto — автовыбор\n\n' +
+    'Текущий: *' + cur + '*\n\n' +
+    'Прямой вопрос к модели: /ask [модель] [вопрос]',
     { parse_mode: 'Markdown' }
   );
 });
 
 bot.hears('🔑 Ключи', (ctx) => {
   if (!isAdmin(ctx)) return;
-  const mode = userMode[ctx.from.id] || 'assistant';
+  const mode = userMode[ctx.from.id] || 'auto';
   const agent = userAgent[ctx.from.id] || 'auto';
   ctx.reply(
     '🔑 *СТАТУС СИСТЕМЫ:*\n\n' +
     'Supabase: ' + (process.env.SUPABASE_URL ? '✅' : '❌') + '\n' +
-    'Telegram: ✅\n' +
     'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅' : '❌') + '\n' +
     'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n' +
+    'Whisper: ' + (process.env.OPENAI_API_KEY ? '✅' : '❌') + '\n' +
+    'Tavily поиск: ' + (process.env.TAVILY_API_KEY ? '✅' : '❌') + '\n' +
     'Webhook: ' + (WEBHOOK_URL ? '✅' : '⚠️ polling') + '\n\n' +
-    'Режим: ' + mode + '\n' +
-    'Агент: ' + agent + '\n' +
-    'Сообщений: ' + stats.messages,
+    'Режим: *' + mode + '*\n' +
+    'Агент: *' + agent + '*\n' +
+    'Сообщений: ' + stats.messages + '\n' +
+    'Голосовых: ' + stats.voice + '\n' +
+    'Фото: ' + stats.photos + '\n' +
+    'Поисков: ' + stats.searches + '\n' +
+    'Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.',
     { parse_mode: 'Markdown' }
   );
 });
@@ -255,25 +370,16 @@ bot.command('task', async (ctx) => {
   if (!isAdmin(ctx)) return;
   const task = ctx.message.text.replace('/task', '').trim();
   if (!task) return ctx.reply('Напиши: /task описание задачи');
-  await supabase.from('tasks').insert({
-    description: task,
-    status: 'pending',
-    created_at: new Date().toISOString()
-  });
+  await supabase.from('tasks').insert({ description: task, status: 'pending', created_at: new Date().toISOString() });
   ctx.reply('✅ *Задача сохранена:*\n"' + task + '"', { parse_mode: 'Markdown' });
 });
 
 bot.hears('📋 Задачи', async (ctx) => {
   if (!isAdmin(ctx)) return;
-  const { data } = await supabase
-    .from('tasks')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(15);
-
+  const { data } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(15);
   let msg = '📋 *ЗАДАЧИ:*\n\n';
   if (!data || !data.length) {
-    msg += '⏳ Phantom wallet devnet\n⏳ Юрисдикция компании\n⏳ UptimeRobot\n⏳ Голосовые Whisper\n⏳ Generate Domain Railway';
+    msg += '⏳ Generate Domain Railway\n⏳ Helius API ключ\n⏳ Phantom wallet devnet\n⏳ Юрисдикция компании\n⏳ UptimeRobot\n⏳ Tavily API ключ\n⏳ Whisper голосовые';
   } else {
     data.forEach(function(t) {
       const e = t.status === 'done' ? '✅' : t.status === 'in_progress' ? '🔄' : '⏳';
@@ -302,9 +408,7 @@ bot.command('learn', async (ctx) => {
   const knowledge = ctx.message.text.replace('/learn', '').trim();
   if (!knowledge) return ctx.reply('Формат: /learn тема: содержание');
   const { error } = await supabase.from('knowledge').insert({
-    content: knowledge,
-    source: 'architect',
-    created_at: new Date().toISOString()
+    content: knowledge, source: 'architect', created_at: new Date().toISOString()
   });
   if (error) return ctx.reply('❌ Ошибка: ' + error.message);
   ctx.reply('🧠 *Знание сохранено!*\n\n"' + knowledge.substring(0, 200) + '"', { parse_mode: 'Markdown' });
@@ -315,135 +419,313 @@ bot.command('recall', async (ctx) => {
   const query = ctx.message.text.replace('/recall', '').trim();
   if (!query) return ctx.reply('Формат: /recall ключевое слово');
   const { data, error } = await supabase
-    .from('knowledge')
-    .select('*')
-    .ilike('content', '%' + query + '%')
-    .order('created_at', { ascending: false })
-    .limit(5);
+    .from('knowledge').select('*').ilike('content', '%' + query + '%')
+    .order('created_at', { ascending: false }).limit(5);
   if (error) return ctx.reply('❌ Ошибка: ' + error.message);
-  if (!data || !data.length) return ctx.reply('❌ По запросу "' + query + '" ничего не найдено');
+  if (!data || !data.length) return ctx.reply('❌ Не найдено: "' + query + '"');
   let msg = '🔍 *Найдено по "' + query + '":*\n\n';
-  data.forEach(function(k, i) {
-    msg += (i + 1) + '. ' + k.content.substring(0, 200) + '\n\n';
-  });
+  data.forEach(function(k, i) { msg += (i + 1) + '. ' + k.content.substring(0, 200) + '\n\n'; });
   ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-bot.hears('📚 Знания', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply('📚 *ПАМЯТЬ SUS:*\n\n/learn тема: текст\n/recall ключевое слово\n/forget ключевое слово — удалить знание', { parse_mode: 'Markdown' });
 });
 
 bot.command('forget', async (ctx) => {
   if (!isAdmin(ctx)) return;
   const query = ctx.message.text.replace('/forget', '').trim();
   if (!query) return ctx.reply('Формат: /forget ключевое слово');
-  const { data } = await supabase
-    .from('knowledge')
-    .select('id, content')
-    .ilike('content', '%' + query + '%')
-    .limit(1);
+  const { data } = await supabase.from('knowledge').select('id, content').ilike('content', '%' + query + '%').limit(1);
   if (!data || !data.length) return ctx.reply('❌ Не найдено: "' + query + '"');
   await supabase.from('knowledge').delete().eq('id', data[0].id);
   ctx.reply('🗑 *Удалено:*\n"' + data[0].content.substring(0, 100) + '"', { parse_mode: 'Markdown' });
 });
 
-// ===== ОЧИСТКА ИСТОРИИ =====
+bot.command('export', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const { data } = await supabase.from('knowledge').select('*').order('created_at', { ascending: false });
+  if (!data || !data.length) return ctx.reply('База знаний пуста');
+  let msg = '📤 *БАЗА ЗНАНИЙ (' + data.length + ' записей):*\n\n';
+  data.forEach(function(k, i) { msg += (i + 1) + '. [' + (k.source || 'architect') + '] ' + k.content.substring(0, 150) + '\n\n'; });
+  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
+});
+
+bot.hears('📚 Знания', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.reply(
+    '📚 *ПАМЯТЬ SUS:*\n\n' +
+    '/learn тема: текст — сохранить\n' +
+    '/recall слово — найти\n' +
+    '/forget слово — удалить\n' +
+    '/export — выгрузить всё\n' +
+    '/clear — очистить историю чата',
+    { parse_mode: 'Markdown' }
+  );
+});
+
 bot.command('clear', (ctx) => {
   if (!isAdmin(ctx)) return;
   conversationHistory[ctx.from.id] = [];
   ctx.reply('🗑 История разговора очищена. Начинаем с чистого листа.');
 });
 
-// ===== СМЕНА АГЕНТА =====
+// ===== АГЕНТ =====
 bot.command('agent', (ctx) => {
   if (!isAdmin(ctx)) return;
   const agent = ctx.message.text.replace('/agent', '').trim().toLowerCase();
-  if (!agent) {
-    const current = userAgent[ctx.from.id] || 'auto';
-    return ctx.reply(
-      '🤖 *Доступные агенты:*\n\n' +
-      '/agent haiku — Claude Haiku (умный, быстрый)\n' +
-      '/agent gpt — GPT-4o-mini (универсальный)\n' +
-      '/agent deepseek — DeepSeek (технический, код)\n' +
-      '/agent grok — Grok (стратегия, тренды)\n' +
-      '/agent mistral — Mistral (тексты, маркетинг)\n' +
-      '/agent auto — автоматический выбор\n\n' +
-      'Текущий: *' + current + '*',
-      { parse_mode: 'Markdown' }
-    );
-  }
+  if (!agent) return ctx.reply('Напиши /agent [имя]: sonnet, haiku, gpt4o, deepseek, grok, auto');
   if (agent === 'auto') {
     delete userAgent[ctx.from.id];
-    return ctx.reply('🔄 Режим: автоматический выбор агента');
+    return ctx.reply('🔄 Агент: автовыбор (Claude Sonnet)');
   }
-  if (!ALL_MODELS[agent]) {
-    return ctx.reply('❌ Неизвестный агент. Доступны: haiku, gpt, deepseek, grok, mistral, auto');
-  }
+  if (!ALL_MODELS[agent]) return ctx.reply('❌ Доступны: sonnet, haiku, gpt4o, deepseek, grok, auto');
   userAgent[ctx.from.id] = agent;
-  ctx.reply('✅ Агент переключён на: *' + agent + '*', { parse_mode: 'Markdown' });
+  ctx.reply('✅ Агент переключён: *' + agent + '*', { parse_mode: 'Markdown' });
 });
 
-// ===== СМЕНА РЕЖИМА =====
+// ===== ПРЯМОЙ ВОПРОС К МОДЕЛИ =====
+bot.command('ask', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const args = ctx.message.text.replace('/ask', '').trim();
+  if (!args) return ctx.reply('Формат: /ask [модель] [вопрос]\nПример: /ask deepseek напиши Rust функцию');
+  const parts = args.split(' ');
+  const modelName = parts[0].toLowerCase();
+  const question = parts.slice(1).join(' ');
+  if (!question) return ctx.reply('Укажи вопрос после названия модели');
+  if (!ALL_MODELS[modelName]) return ctx.reply('❌ Доступны: sonnet, haiku, gpt4o, gpt, deepseek, grok, mistral');
+  await ctx.reply('🤖 Спрашиваю *' + modelName + '*...', { parse_mode: 'Markdown' });
+  const result = await callAI(
+    [{ role: 'system', content: BASE_PROMPT }, { role: 'user', content: question }],
+    [ALL_MODELS[modelName]]
+  );
+  if (result) {
+    await sendLong(ctx, result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
+  } else {
+    ctx.reply('❌ Модель ' + modelName + ' не ответила');
+  }
+});
+
+// ===== РЕЖИМ =====
 bot.command('mode', (ctx) => {
   if (!isAdmin(ctx)) return;
   const mode = ctx.message.text.replace('/mode', '').trim().toLowerCase();
   if (!mode) {
-    const current = userMode[ctx.from.id] || 'assistant';
+    const cur = userMode[ctx.from.id] || 'auto';
     let msg = '🎭 *Режимы SUS:*\n\n';
     Object.keys(MODES).forEach(function(m) {
-      msg += (m === current ? '✅ ' : '') + '/mode ' + m + ' — ' + MODES[m] + '\n\n';
+      msg += (m === cur ? '✅ ' : '') + '/mode ' + m + '\n' + MODES[m] + '\n\n';
     });
     return ctx.reply(msg, { parse_mode: 'Markdown' });
   }
-  if (!MODES[mode]) {
-    return ctx.reply('❌ Неизвестный режим. Доступны: assistant, critic, coder, strategist, writer, analyst');
-  }
+  if (!MODES[mode]) return ctx.reply('❌ Доступны: auto, assistant, critic, coder, strategist, writer, analyst');
   userMode[ctx.from.id] = mode;
   conversationHistory[ctx.from.id] = [];
-  ctx.reply('✅ Режим: *' + mode + '*\n' + MODES[mode] + '\n\nИстория очищена для чистого старта.', { parse_mode: 'Markdown' });
+  ctx.reply('✅ Режим: *' + mode + '*\n' + MODES[mode] + '\n\nИстория очищена.', { parse_mode: 'Markdown' });
 });
 
 // ===== НАПОМИНАНИЯ =====
 bot.command('remind', (ctx) => {
   if (!isAdmin(ctx)) return;
   const text = ctx.message.text.replace('/remind', '').trim();
-  if (!text) return ctx.reply(
-    'Форматы:\n' +
-    '/remind 30m позвонить партнёру\n' +
-    '/remind 2h проверить деплой\n' +
-    '/remind 1d написать whitepaper'
-  );
-
+  if (!text) return ctx.reply('Форматы:\n/remind 30m текст\n/remind 2h текст\n/remind 1d текст');
   const parts = text.split(' ');
   const timeStr = parts[0].toLowerCase();
   const reminder = parts.slice(1).join(' ');
-
   if (!reminder) return ctx.reply('Укажи текст напоминания после времени');
-
   let ms = 0;
   if (timeStr.endsWith('m')) ms = parseInt(timeStr) * 60 * 1000;
   else if (timeStr.endsWith('h')) ms = parseInt(timeStr) * 60 * 60 * 1000;
   else if (timeStr.endsWith('d')) ms = parseInt(timeStr) * 24 * 60 * 60 * 1000;
-  else return ctx.reply('❌ Формат времени: 30m, 2h, 1d');
-
+  else return ctx.reply('❌ Формат: 30m, 2h, 1d');
   if (isNaN(ms) || ms <= 0) return ctx.reply('❌ Некорректное время');
-
-  reminders.push({
-    userId: ctx.from.id,
-    text: reminder,
-    time: Date.now() + ms
-  });
-
+  reminders.push({ userId: ctx.from.id, text: reminder, time: Date.now() + ms });
   const when = new Date(Date.now() + ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  ctx.reply('⏰ Напомню в ' + when + ':\n"' + reminder + '"');
+  ctx.reply('⏰ Напомню около ' + when + ':\n"' + reminder + '"');
 });
 
-// ===== ОБНОВЛЕНИЕ ПРОГРЕССА =====
+bot.command('reminders', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const myReminders = reminders.filter(function(r) { return String(r.userId) === String(ctx.from.id); });
+  if (!myReminders.length) return ctx.reply('Нет активных напоминаний');
+  let msg = '⏰ *Активные напоминания:*\n\n';
+  myReminders.forEach(function(r, i) {
+    const when = new Date(r.time).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    msg += (i + 1) + '. ' + when + ' — ' + r.text + '\n';
+  });
+  ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+// ===== ВЕБ-ПОИСК =====
+bot.command('search', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const query = ctx.message.text.replace('/search', '').trim();
+  if (!query) return ctx.reply('Формат: /search твой запрос');
+  if (!process.env.TAVILY_API_KEY) {
+    return ctx.reply('❌ Требуется TAVILY_API_KEY\ntavily.com — 1000 запросов бесплатно\nДобавь в Railway Variables.');
+  }
+  stats.searches++;
+  await ctx.reply('🔍 Ищу: "' + query + '"...');
+  const results = await webSearch(query);
+  if (!results) return ctx.reply('❌ Поиск не дал результатов');
+  const result = await callAI([
+    { role: 'system', content: 'Кратко изложи ключевые факты из поисковых результатов. Отвечай на языке запроса.' },
+    { role: 'user', content: 'Запрос: ' + query + '\n\nРезультаты поиска:\n' + results }
+  ], DEFAULT_MODELS);
+  if (result) {
+    await sendLong(ctx, '🔍 *"' + query + '":*\n\n' + result.text, { parse_mode: 'Markdown' });
+  } else {
+    await sendLong(ctx, '📋 *Найдено:*\n\n' + results, { parse_mode: 'Markdown' });
+  }
+});
+
+// ===== АНАЛИЗ ДОКУМЕНТОВ =====
+bot.command('analyze', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  ctx.reply(
+    '📄 *Анализ документов:*\n\n' +
+    'Отправь файл или текст с командой /analyze в подписи.\n\n' +
+    'Также можешь:\n' +
+    '1. Скопировать текст и написать мне прямо\n' +
+    '2. Отправить фото документа\n' +
+    '3. Написать /analyze и вставить текст ниже\n\n' +
+    '*Пример:* /analyze Проанализируй этот договор:\n[текст договора...]',
+    { parse_mode: 'Markdown' }
+  );
+  const textAfterCmd = ctx.message.text.replace('/analyze', '').trim();
+  if (textAfterCmd.length > 50) {
+    await ctx.reply('📄 Анализирую...');
+    const result = await callAI([
+      { role: 'system', content: BASE_PROMPT + '\nПроанализируй документ детально. Выдели ключевые пункты, риски, рекомендации.' },
+      { role: 'user', content: textAfterCmd }
+    ], DEFAULT_MODELS);
+    if (result) {
+      await sendLong(ctx, result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
+    }
+  }
+});
+
+// ===== ОБРАБОТКА ДОКУМЕНТОВ/ФАЙЛОВ =====
+bot.on('document', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const doc = ctx.message.document;
+  const caption = ctx.message.caption || '';
+  if (doc.mime_type === 'text/plain' || doc.file_name.endsWith('.txt') || doc.file_name.endsWith('.md')) {
+    await ctx.reply('📄 Читаю файл: ' + doc.file_name);
+    try {
+      const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+      const response = await fetch(fileLink.href);
+      const text = await response.text();
+      const truncated = text.substring(0, 4000);
+      const prompt = caption || 'Проанализируй этот документ. Выдели главное, риски, выводы.';
+      const result = await callAI([
+        { role: 'system', content: BASE_PROMPT },
+        { role: 'user', content: prompt + '\n\nСодержимое файла "' + doc.file_name + '":\n\n' + truncated }
+      ], DEFAULT_MODELS);
+      if (result) {
+        await sendLong(ctx, '📄 *Анализ "' + doc.file_name + '":*\n\n' + result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
+      }
+    } catch (e) {
+      ctx.reply('❌ Ошибка чтения файла: ' + e.message);
+    }
+  } else {
+    ctx.reply('📎 Файл получен: *' + doc.file_name + '*\nПоддерживаются .txt и .md файлы для анализа.', { parse_mode: 'Markdown' });
+  }
+});
+
+// ===== ИДЕИ =====
+bot.command('idea', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const topic = ctx.message.text.replace('/idea', '').trim();
+  if (!topic) return ctx.reply('Формат: /idea тема\nПример: /idea монетизация Veritas Studio');
+  await ctx.reply('💡 Генерирую идеи: "' + topic + '"...');
+  const result = await callAI([
+    {
+      role: 'system',
+      content: BASE_PROMPT + '\nСгенерируй ровно 5 конкретных идей. Каждая: заголовок, описание 2-3 предложения, оценка потенциала (🔴 низкий / 🟡 средний / 🟢 высокий).'
+    },
+    { role: 'user', content: 'Придумай 5 идей для: ' + topic }
+  ], DEFAULT_MODELS);
+  if (result) {
+    await sendLong(ctx, '💡 *Идеи: "' + topic + '":*\n\n' + result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
+    await supabase.from('knowledge').insert({
+      content: 'Идеи по теме "' + topic + '": ' + result.text.substring(0, 300),
+      source: 'idea_generation',
+      created_at: new Date().toISOString()
+    });
+  } else {
+    ctx.reply('❌ Не удалось сгенерировать идеи');
+  }
+});
+
+// ===== ИТОГ ДНЯ =====
+bot.command('summary', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  await ctx.reply('📋 Составляю итог...');
+  const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(10);
+  const { data: knowledge } = await supabase.from('knowledge').select('content, source').order('created_at', { ascending: false }).limit(8);
+  const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
+  const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
+
+  let msg = '📊 *ИТОГ ДНЯ — SUS v6.1*\n\n';
+  msg += '✅ *Выполнено (' + done.length + '):*\n';
+  if (done.length) { done.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; }); }
+  else { msg += '• Нет\n'; }
+  msg += '\n⏳ *В очереди (' + pending.length + '):*\n';
+  if (pending.length) { pending.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; }); }
+  else { msg += '• Очередь пуста\n'; }
+  msg += '\n🧠 *Последние знания:*\n';
+  if (knowledge && knowledge.length) {
+    knowledge.slice(0, 4).forEach(function(k) {
+      msg += '• [' + (k.source || 'arch') + '] ' + k.content.substring(0, 80) + '\n';
+    });
+  }
+  msg += '\n📈 *Статистика сессии:*\n';
+  msg += '• Сообщений: ' + stats.messages + '\n';
+  msg += '• Голосовых: ' + stats.voice + '\n';
+  msg += '• Поисков: ' + stats.searches + '\n';
+  msg += '• Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.';
+  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
+});
+
+// ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (вручную) =====
+bot.command('weekly', async (ctx) => {
+  if (!isAdmin(ctx)) return;
+  await ctx.reply('📅 Составляю недельный отчёт...');
+  const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(30);
+  const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
+  const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
+  const { data: eco } = await supabase.from('ecosystem_status').select('*');
+
+  const ecoItems = eco && eco.length > 0 ? eco : [
+    { component: 'Aureon Network', progress: 33 }, { component: 'VERITAS', progress: 25 },
+    { component: 'Veritas Studio', progress: 30 }, { component: 'AI SUS', progress: 98 },
+    { component: 'NFT система', progress: 35 }, { component: 'Digital Court', progress: 10 }
+  ];
+  const totalProgress = Math.round(ecoItems.reduce(function(s, i) { return s + i.progress; }, 0) / ecoItems.length);
+
+  const result = await callAI([
+    { role: 'system', content: BASE_PROMPT + '\nТы составляешь еженедельный стратегический отчёт. Будь конкретным и честным.' },
+    {
+      role: 'user',
+      content: 'Составь недельный отчёт LIBERTAS.\n\n' +
+        'Выполнено задач: ' + done.length + '\n' +
+        'Ожидает: ' + pending.length + '\n' +
+        'Общий прогресс экосистемы: ' + totalProgress + '%\n\n' +
+        'Задачи в очереди:\n' + pending.slice(0, 5).map(function(t) { return '- ' + t.description; }).join('\n') + '\n\n' +
+        'Дай: 1) оценку прогресса 2) топ-3 приоритета на следующую неделю 3) главный риск 4) рекомендацию'
+    }
+  ], DEFAULT_MODELS);
+
+  let msg = '📅 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ LIBERTAS*\n\n';
+  msg += '📊 Прогресс экосистемы: *' + totalProgress + '%*\n';
+  msg += '✅ Выполнено задач: ' + done.length + '\n';
+  msg += '⏳ В очереди: ' + pending.length + '\n\n';
+  if (result) msg += result.text;
+  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
+});
+
+// ===== ПРОГРЕСС =====
 bot.command('progress', async (ctx) => {
   if (!isAdmin(ctx)) return;
   const args = ctx.message.text.replace('/progress', '').trim();
-  if (!args) return ctx.reply('Формат: /progress Компонент: 75');
+  if (!args) return ctx.reply('Формат: /progress Компонент: 75\nПример: /progress AI SUS: 98');
   const parts = args.split(':');
   if (parts.length < 2) return ctx.reply('Формат: /progress Компонент: число');
   const component = parts[0].trim();
@@ -468,83 +750,31 @@ bot.command('budget', async (ctx) => {
     const data = await response.json();
     const used = data.data && data.data.usage ? Number(data.data.usage).toFixed(4) : '0.0000';
     const limit = data.data && data.data.limit;
-    const uptime = Math.floor((Date.now() - stats.start_time) / 3600000);
     ctx.reply(
       '💰 *БЮДЖЕТ OPENROUTER:*\n\n' +
       'Потрачено: $' + used + '\n' +
       'Лимит: ' + (limit === null || limit === undefined ? 'unlimited' : '$' + limit) + '\n\n' +
       '📊 *СТАТИСТИКА SUS:*\n' +
-      'Сообщений обработано: ' + stats.messages + '\n' +
-      'Аптайм: ' + uptime + ' ч.',
+      'Сообщений: ' + stats.messages + '\n' +
+      'Голосовых: ' + stats.voice + '\n' +
+      'Поисков: ' + stats.searches + '\n' +
+      'Напоминаний: ' + reminders.length + '\n' +
+      'Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.',
       { parse_mode: 'Markdown' }
     );
-  } catch (e) {
-    ctx.reply('❌ Ошибка: ' + e.message);
-  }
+  } catch (e) { ctx.reply('❌ Ошибка: ' + e.message); }
 });
 
-// ===== ИТОГ ДНЯ =====
-bot.command('summary', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  await ctx.reply('📋 Составляю итог...');
-
-  const { data: tasks } = await supabase
-    .from('tasks')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(10);
-
-  const { data: knowledge } = await supabase
-    .from('knowledge')
-    .select('content')
-    .order('created_at', { ascending: false })
-    .limit(5);
-
-  const doneTasks = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
-  const pendingTasks = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
-
-  let msg = '📊 *ИТОГ ДНЯ — SUS*\n\n';
-  msg += '✅ *Выполнено (' + doneTasks.length + '):*\n';
-  if (doneTasks.length) {
-    doneTasks.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; });
-  } else {
-    msg += '• Нет выполненных задач\n';
-  }
-  msg += '\n⏳ *В работе (' + pendingTasks.length + '):*\n';
-  if (pendingTasks.length) {
-    pendingTasks.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; });
-  } else {
-    msg += '• Очередь пуста\n';
-  }
-  msg += '\n🧠 *Последние знания:*\n';
-  if (knowledge && knowledge.length) {
-    knowledge.slice(0, 3).forEach(function(k) { msg += '• ' + k.content.substring(0, 80) + '\n'; });
-  }
-  msg += '\n💬 Сообщений сегодня: ' + stats.messages;
-
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-// ===== ЭКСПОРТ ЗНАНИЙ =====
-bot.command('export', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const { data } = await supabase.from('knowledge').select('*').order('created_at', { ascending: false });
-  if (!data || !data.length) return ctx.reply('База знаний пуста');
-  let msg = '📤 *ЭКСПОРТ БАЗЫ ЗНАНИЙ (' + data.length + ' записей):*\n\n';
-  data.forEach(function(k, i) {
-    msg += (i + 1) + '. ' + k.content.substring(0, 150) + '\n\n';
-  });
-  if (msg.length > 4000) msg = msg.substring(0, 3900) + '\n...(обрезано)';
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-// ===== ДИАГНОСТИКА =====
+// ===== ТЕСТ AI =====
 bot.command('aitest', async (ctx) => {
   if (!isAdmin(ctx)) return;
-  ctx.reply('🔍 Тестирую все модели...');
+  await ctx.reply('🔍 Тестирую все модели...');
+  const testModels = ['sonnet', 'haiku', 'gpt', 'deepseek', 'mistral'];
   const results = [];
-  for (const name in ALL_MODELS) {
+  for (let j = 0; j < testModels.length; j++) {
+    const name = testModels[j];
     try {
+      const start = Date.now();
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json' },
@@ -552,9 +782,10 @@ bot.command('aitest', async (ctx) => {
       });
       const data = await response.json();
       const ok = data.choices && data.choices[0] && data.choices[0].message;
-      results.push((ok ? '✅' : '❌') + ' ' + name);
+      const ms = Date.now() - start;
+      results.push((ok ? '✅' : '❌') + ' ' + name + ' (' + ms + 'ms)');
     } catch (e) {
-      results.push('❌ ' + name + ' (' + e.message.substring(0, 30) + ')');
+      results.push('❌ ' + name + ': ' + e.message.substring(0, 25));
     }
   }
   ctx.reply('📊 *Статус моделей:*\n\n' + results.join('\n'), { parse_mode: 'Markdown' });
@@ -564,80 +795,84 @@ bot.command('aitest', async (ctx) => {
 bot.hears('❓ Помощь', (ctx) => {
   if (!isAdmin(ctx)) return;
   ctx.reply(
-    '📖 *SUS v5.0 — ПОЛНЫЙ СПИСОК КОМАНД:*\n\n' +
-    '*📝 ЗАДАЧИ:*\n' +
-    '/task [текст] — добавить задачу\n' +
-    '/done [текст] — отметить выполненной\n\n' +
+    '📖 *SUS v6.1 — ВСЕ КОМАНДЫ:*\n\n' +
     '*🧠 ПАМЯТЬ:*\n' +
-    '/learn [тема: текст] — обучить\n' +
-    '/recall [слово] — найти\n' +
-    '/forget [слово] — удалить\n' +
-    '/export — выгрузить всю базу\n\n' +
-    '*🤖 АГЕНТЫ:*\n' +
-    '/agent [имя] — сменить агента\n' +
-    '/mode [режим] — сменить режим\n\n' +
-    '*⚙️ УПРАВЛЕНИЕ:*\n' +
-    '/clear — очистить историю чата\n' +
-    '/progress [Компонент: %] — обновить прогресс\n' +
-    '/remind [30m/2h/1d] [текст] — напоминание\n\n' +
-    '*📊 АНАЛИТИКА:*\n' +
+    '/learn [тема: текст]\n' +
+    '/recall [слово]\n' +
+    '/forget [слово]\n' +
+    '/export — вся база\n' +
+    '/clear — очистить чат\n\n' +
+    '*📝 ЗАДАЧИ:*\n' +
+    '/task [текст]\n' +
+    '/done [текст]\n\n' +
+    '*🎭 НАСТРОЙКА:*\n' +
+    '/mode — сменить режим\n' +
+    '/agent — сменить модель\n' +
+    '/ask [модель] [вопрос]\n\n' +
+    '*🛠 ИНСТРУМЕНТЫ:*\n' +
+    '/search [запрос] — веб\n' +
+    '/analyze [текст] — документ\n' +
+    '/idea [тема] — идеи\n' +
+    '/remind [30m/2h/1d] [текст]\n' +
+    '/reminders — список\n' +
+    '/progress [Компонент: %]\n\n' +
+    '*📊 ОТЧЁТЫ:*\n' +
     '/summary — итог дня\n' +
-    '/budget — бюджет и статистика\n' +
-    '/aitest — проверить все модели\n\n' +
-    '💬 Любой текст → AI ответ с памятью!',
+    '/weekly — недельный отчёт\n' +
+    '/budget — расходы\n' +
+    '/aitest — тест моделей\n\n' +
+    '📎 Отправь .txt/.md файл → анализ\n' +
+    '🖼 Отправь фото → анализ\n' +
+    '🎤 Голосовое → транскрипция + ответ\n\n' +
+    '💬 Любой текст → Claude Sonnet 4.5!',
     { parse_mode: 'Markdown' }
   );
 });
 
-// ===== ГОЛОСОВЫЕ СООБЩЕНИЯ =====
+// ===== ГОЛОСОВЫЕ =====
 bot.on('voice', async (ctx) => {
   if (!isAdmin(ctx)) return;
   if (!process.env.OPENAI_API_KEY) {
-    return ctx.reply('❌ Голосовые сообщения требуют OPENAI_API_KEY для Whisper.\nДобавь в Railway Variables.');
+    return ctx.reply('❌ Голосовые требуют OPENAI_API_KEY (Whisper API).\nДобавь в Railway Variables.');
   }
+  stats.voice++;
   await ctx.reply('🎤 Распознаю речь...');
   try {
-    const fileId = ctx.message.voice.file_id;
-    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const fileLink = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
     const audioResponse = await fetch(fileLink.href);
     const audioBuffer = await audioResponse.arrayBuffer();
     const formData = new FormData();
-    const blob = new Blob([audioBuffer], { type: 'audio/ogg' });
-    formData.append('file', blob, 'voice.ogg');
+    formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg');
     formData.append('model', 'whisper-1');
-    formData.append('language', 'ru');
-    const whisperResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    const whisperResp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
       body: formData
     });
-    const whisperData = await whisperResponse.json();
+    const whisperData = await whisperResp.json();
     const transcribed = whisperData.text;
     if (!transcribed) return ctx.reply('❌ Не удалось распознать речь');
     await ctx.reply('🎤 *Распознано:* ' + transcribed, { parse_mode: 'Markdown' });
-    ctx.message.text = transcribed;
     await processAIMessage(ctx, transcribed);
   } catch (e) {
     ctx.reply('❌ Ошибка голосового: ' + e.message);
   }
 });
 
-// ===== ФОТО — АНАЛИЗ ИЗОБРАЖЕНИЙ =====
+// ===== ФОТО =====
 bot.on('photo', async (ctx) => {
   if (!isAdmin(ctx)) return;
+  stats.photos++;
   await ctx.reply('🖼 Анализирую изображение...');
   try {
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-    const caption = ctx.message.caption || 'Что на этом изображении? Опиши подробно.';
+    const caption = ctx.message.caption || 'Что на изображении? Опиши подробно и дай оценку/рекомендации если уместно.';
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'anthropic/claude-haiku-4-5',
+        model: ALL_MODELS.haiku,
         messages: [{
           role: 'user',
           content: [
@@ -649,7 +884,11 @@ bot.on('photo', async (ctx) => {
     });
     const data = await response.json();
     const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    ctx.reply(text || '❌ Не удалось проанализировать изображение');
+    if (text) {
+      await sendLong(ctx, text, { parse_mode: 'Markdown' });
+    } else {
+      ctx.reply('❌ Не удалось проанализировать изображение');
+    }
   } catch (e) {
     ctx.reply('❌ Ошибка анализа: ' + e.message);
   }
@@ -658,68 +897,51 @@ bot.on('photo', async (ctx) => {
 // ===== ОСНОВНАЯ AI ФУНКЦИЯ =====
 async function processAIMessage(ctx, messageText) {
   const userId = ctx.from.id;
-  stats.messages++;
 
+  // Rate limiting
+  const now = Date.now();
+  if (lastMessage[userId] && (now - lastMessage[userId]) < RATE_LIMIT_MS) {
+    return;
+  }
+  lastMessage[userId] = now;
+
+  stats.messages++;
   addToHistory(userId, 'user', messageText);
 
   const { data: memories } = await supabase.from('knowledge').select('content').limit(15);
   let memoryContext = '';
   if (memories && memories.length) {
-    memoryContext = '\n\nСохранённые знания:\n' + memories.map(function(m) { return '- ' + m.content; }).join('\n');
+    memoryContext = '\n\nБаза знаний Архитектора:\n' +
+      memories.map(function(m) { return '- ' + m.content; }).join('\n');
   }
 
-  const systemPrompt = getSystemPrompt(userId) + memoryContext;
+  const currentMode = userMode[userId] || 'auto';
+  const autoMode = currentMode === 'auto' ? detectMode(messageText) : currentMode;
+  const systemPrompt = getSystemPrompt(userId, autoMode) + memoryContext;
+
   const history = getHistory(userId);
   const models = getModels(userId);
 
-  const messages = [{ role: 'system', content: systemPrompt }].concat(
-    history.slice(0, -1)
-  ).concat([{ role: 'user', content: messageText }]);
+  const messages = [{ role: 'system', content: systemPrompt }]
+    .concat(history.slice(0, -1))
+    .concat([{ role: 'user', content: messageText }]);
 
-  let reply = null;
-  let usedModel = null;
+  const result = await callAI(messages, models);
 
-  for (let i = 0; i < models.length; i++) {
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model: models[i], messages: messages })
-      });
-      const data = await response.json();
-      const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (text && text.length > 0) {
-        reply = text;
-        usedModel = models[i].split('/')[1];
-        break;
-      }
-    } catch (e) {
-      continue;
-    }
-  }
-
-  if (reply) {
-    addToHistory(userId, 'assistant', reply);
-    const mode = userMode[userId] || 'assistant';
-    const footer = '\n\n_(' + usedModel + ' | ' + mode + ')_';
-    const fullReply = reply + footer;
-    if (fullReply.length > 4096) {
-      await ctx.reply(reply.substring(0, 4000) + '...', { parse_mode: 'Markdown' });
-    } else {
-      await ctx.reply(fullReply, { parse_mode: 'Markdown' });
-    }
+  if (result) {
+    addToHistory(userId, 'assistant', result.text);
+    await autoSaveConversation(userId, messageText, result.text);
+    const modeLabel = currentMode === 'auto' ? autoMode + ' (авто)' : currentMode;
+    const footer = '\n\n_(' + result.model + ' | ' + modeLabel + ')_';
+    await sendLong(ctx, result.text + footer, { parse_mode: 'Markdown' });
   } else {
     ctx.reply('❌ AI недоступен. Попробуй /aitest');
   }
 }
 
-// ===== ТЕКСТОВЫЕ СООБЩЕНИЯ =====
+// ===== ТЕКСТ =====
 bot.on('text', async (ctx) => {
   if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied');
-  await ctx.reply('🤔 Думаю...');
   try {
     await processAIMessage(ctx, ctx.message.text);
   } catch (e) {
@@ -728,13 +950,30 @@ bot.on('text', async (ctx) => {
 });
 
 // ===== ЗАПУСК =====
+const server = http.createServer(function(req, res) {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok', version: '6.1',
+      uptime: Math.floor((Date.now() - stats.start_time) / 1000),
+      messages: stats.messages, reminders: reminders.length
+    }));
+    return;
+  }
+  if (WEBHOOK_URL) {
+    bot.webhookCallback('/webhook')(req, res);
+  } else {
+    res.writeHead(404); res.end();
+  }
+});
+server.listen(PORT, () => { console.log('SUS v6.1 server port ' + PORT); });
+
 if (WEBHOOK_URL) {
   bot.telegram.setWebhook(WEBHOOK_URL + '/webhook');
-  const server = http.createServer(bot.webhookCallback('/webhook'));
-  server.listen(PORT, () => { console.log('SUS v5.0 WEBHOOK port ' + PORT); });
+  console.log('SUS v6.1 WEBHOOK mode');
 } else {
   bot.launch({ dropPendingUpdates: true });
-  console.log('SUS v5.0 ONLINE — Память + Режимы + Голос + Фото + Напоминания');
+  console.log('SUS v6.1 ONLINE — Claude Sonnet + Все функции активны');
 }
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
