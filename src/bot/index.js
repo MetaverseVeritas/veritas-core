@@ -7,7 +7,6 @@
 const { Bot, InlineKeyboard } = require("grammy");
 const { createClient } = require("@supabase/supabase-js");
 const cron = require("node-cron");
-const fetch = require("node-fetch");
 const dotenv = require("dotenv");
 dotenv.config();
 
