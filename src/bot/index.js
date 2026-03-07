@@ -4,11 +4,11 @@
  * Autonomous jobs: morning/evening posts, weekly report, health check
  */
 
-import { Bot, InlineKeyboard } from "grammy";
-import { createClient } from "@supabase/supabase-js";
-import cron from "node-cron";
-import fetch from "node-fetch";
-import * as dotenv from "dotenv";
+const { Bot, InlineKeyboard } = require("grammy");
+const { createClient } = require("@supabase/supabase-js");
+const cron = require("node-cron");
+const fetch = require("node-fetch");
+const dotenv = require("dotenv");
 dotenv.config();
 
 // ═══ CONFIG ════════════════════════════════════════════════════════
