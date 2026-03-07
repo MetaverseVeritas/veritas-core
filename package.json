@@ -4,13 +4,13 @@
   "description": "VERITAS LIBERTAS — SUS Autonomous Bot",
   "main": "src/bot/index.js",
   "scripts": {
-    "start": "node src/bot/index.js"
+    "start": "node src/bot/index.js",
+    "dev": "node --watch src/bot/index.js"
   },
   "dependencies": {
     "grammy": "^1.21.1",
     "@supabase/supabase-js": "^2.39.0",
     "node-cron": "^3.0.3",
-    "node-fetch": "^3.3.2",
     "dotenv": "^16.4.1"
   },
   "engines": {
