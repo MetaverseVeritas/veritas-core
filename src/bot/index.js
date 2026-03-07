@@ -1,980 +1,436 @@
-require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
-const { createClient } = require('@supabase/supabase-js');
-const http = require('http');
-
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
-
-const ADMIN_ID = process.env.TELEGRAM_ADMIN_CHAT_ID;
-const isAdmin = (ctx) => String(ctx.from.id) === String(ADMIN_ID);
-const PORT = process.env.PORT || 3000;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-
-// ===== МОДЕЛИ =====
-const ALL_MODELS = {
-  sonnet:   'anthropic/claude-sonnet-4-5',
-  haiku:    'anthropic/claude-haiku-4-5',
-  gpt4o:    'openai/gpt-4o',
-  gpt:      'openai/gpt-4o-mini',
-  deepseek: 'deepseek/deepseek-chat',
-  grok:     'x-ai/grok-2-1212',
-  mistral:  'mistralai/mistral-small-3.1-24b-instruct:free',
-  llama:    'meta-llama/llama-3.2-3b-instruct:free'
-};
-
-const DEFAULT_MODELS = [
-  ALL_MODELS.sonnet,
-  ALL_MODELS.haiku,
-  ALL_MODELS.gpt,
-  ALL_MODELS.mistral,
-  ALL_MODELS.llama
-];
-
-// ===== СОСТОЯНИЕ =====
-const conversationHistory = {};
-const userAgent = {};
-const userMode = {};
-const reminders = [];
-const stats = { messages: 0, voice: 0, photos: 0, searches: 0, start_time: Date.now() };
-const lastMessage = {};
-const RATE_LIMIT_MS = 2000;
-
-// ===== РЕЖИМЫ =====
-const MODES = {
-  auto:       'Авто — SUS сам выбирает стиль по контексту',
-  assistant:  'Ассистент — универсальная помощь',
-  critic:     'Критик — риски, слабые места, честность',
-  coder:      'Разработчик — код, архитектура, дебаг',
-  strategist: 'Стратег — долгосрочные цели, рынок',
-  writer:     'Автор — тексты, посты, документы',
-  analyst:    'Аналитик — данные, цифры, выводы'
-};
-
-const MODE_PROMPTS = {
-  auto:       '',
-  assistant:  'Ты универсальный ассистент. Помогаешь с любой задачей кратко и по делу.',
-  critic:     'Ты жёсткий критик. Находишь все слабые места и риски. Не льсти. Говори прямо.',
-  coder:      'Ты senior разработчик. Пишешь чистый код, объясняешь решения, находишь баги.',
-  strategist: 'Ты стратег. Думаешь системно, видишь картину целиком, даёшь конкретные рекомендации.',
-  writer:     'Ты профессиональный автор. Пишешь убедительно и структурированно.',
-  analyst:    'Ты аналитик. Работаешь с цифрами, строишь логику, делаешь выводы на фактах.'
-};
-
-// ===== АВТО-ОПРЕДЕЛЕНИЕ РЕЖИМА =====
-function detectMode(text) {
-  const t = text.toLowerCase();
-  if (t.match(/код|code|функци|баг|ошибк|python|javascript|sql|api|deploy|программ/)) return 'coder';
-  if (t.match(/риск|уязвим|проблем|опасн|слабое|критик|аудит|провер/)) return 'critic';
-  if (t.match(/стратег|план|рынок|конкурент|позицион|долгосроч|масштаб/)) return 'strategist';
-  if (t.match(/напиши|текст|пост|статья|описани|контент|копи|перепиши/)) return 'writer';
-  if (t.match(/анализ|данные|статистик|метрик|сравн|процент|цифр/)) return 'analyst';
-  return 'assistant';
-}
-
-// ===== СИСТЕМНЫЙ ПРОМПТ =====
-const BASE_PROMPT = 'Ты SUS (Strategic Universal System) — персональный AI ассистент Архитектора.\n\n' +
-'ЛИЧНОСТЬ:\n' +
-'- Умный, честный, прямой партнёр и советник\n' +
-'- Критически мыслишь, не боишься указывать на риски\n' +
-'- Помогаешь с ЛЮБОЙ задачей — не только с LIBERTAS\n' +
-'- НЕ тяни каждый ответ к LIBERTAS если вопрос не об этом\n\n' +
-'ЯЗЫК:\n' +
-'- ВАЖНО: отвечай на том же языке на котором написал пользователь\n' +
-'- Русский → русский, English → English\n' +
-'- Будь краток и по делу без лишней воды\n\n' +
-'КОНТЕКСТ О ВЛАДЕЛЬЦЕ (Архитекторе):\n' +
-'- Строит экосистему LIBERTAS — Web3 на Solana L3\n' +
-'- VERITAS метавселенная + Veritum Passport биометрия\n' +
-'- Токен AURA SPL, эмиссия 1 млрд\n' +
-'- NFT тиры: Explorer $5, Pioneer $25, Builder $75, Visionary $250, Sovereign $1500\n' +
-'- 5 бирж: Труда, Активов, Реального сектора, Рекламы, P2P\n' +
-'- Реферал: 4 уровня 10/5/2/1%\n' +
-'- Veritas Studio — AI агентская студия для людей и бизнеса\n' +
-'- Digital Court — система цифрового правосудия\n' +
-'- Veritum Passport — биометрическая идентификация\n' +
-'- AI оркестр: Claude, DeepSeek, Perplexity, Grok, Mistral, Gemini\n' +
-'- Roadmap: Q1 2026 SUS, Q2 NFT, Q3 Aureon devnet, Q4 mainnet\n' +
-'- Проект создаётся для людей, не только для себя\n' +
-'- Безопасность: RLS на Supabase включён, ключи в Railway Variables\n' +
-'- Стек: Node.js, Telegraf, Supabase PostgreSQL, Railway, OpenRouter\n\n' +
-'ПРАВИЛА:\n' +
-'- Упоминай LIBERTAS только когда реально уместно\n' +
-'- Давай честную критику, не только позитив\n' +
-'- Если видишь риск — говори прямо\n' +
-'- Используй историю разговора и базу знаний для контекста\n' +
-'- Не повторяй одно и то же в разных формулировках';
-
-function getSystemPrompt(userId, autoMode) {
-  const mode = autoMode || userMode[userId] || 'auto';
-  const modeExtra = (mode !== 'auto' && MODE_PROMPTS[mode])
-    ? '\n\nТЕКУЩИЙ РЕЖИМ: ' + MODE_PROMPTS[mode] : '';
-  return BASE_PROMPT + modeExtra;
-}
-
-function getModels(userId) {
-  const agent = userAgent[userId];
-  if (agent && ALL_MODELS[agent]) return [ALL_MODELS[agent], ALL_MODELS.sonnet, ALL_MODELS.haiku];
-  return DEFAULT_MODELS;
-}
-
-function addToHistory(userId, role, content) {
-  if (!conversationHistory[userId]) conversationHistory[userId] = [];
-  conversationHistory[userId].push({ role: role, content: String(content).substring(0, 2000) });
-  if (conversationHistory[userId].length > 20) {
-    conversationHistory[userId] = conversationHistory[userId].slice(-20);
-  }
-}
-
-function getHistory(userId) { return conversationHistory[userId] || []; }
-
-// ===== НАПОМИНАНИЯ =====
-setInterval(async function() {
-  const now = Date.now();
-  for (let i = reminders.length - 1; i >= 0; i--) {
-    if (now >= reminders[i].time) {
-      try {
-        await bot.telegram.sendMessage(reminders[i].userId, '⏰ *Напоминание:*\n' + reminders[i].text, { parse_mode: 'Markdown' });
-      } catch (e) { console.log('reminder error:', e.message); }
-      reminders.splice(i, 1);
-    }
-  }
-}, 30000);
-
-// ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (каждое воскресенье в 20:00) =====
-setInterval(async function() {
-  const now = new Date();
-  if (now.getDay() === 0 && now.getHours() === 20 && now.getMinutes() < 1) {
-    try {
-      const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(20);
-      const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
-      const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
-
-      let msg = '📅 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ SUS*\n\n';
-      msg += '✅ Выполнено: ' + done.length + '\n';
-      msg += '⏳ В очереди: ' + pending.length + '\n';
-      msg += '💬 Сообщений за сессию: ' + stats.messages + '\n\n';
-
-      if (pending.length) {
-        msg += '*Приоритеты на неделю:*\n';
-        pending.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; });
-      }
-
-      msg += '\n🎯 Рекомендация: сфокусируйся на 1-2 ключевых задачах.';
-      await bot.telegram.sendMessage(ADMIN_ID, msg, { parse_mode: 'Markdown' });
-    } catch (e) { console.log('weekly report error:', e.message); }
-  }
-}, 60000);
-
-// ===== АВТОСОХРАНЕНИЕ ДИАЛОГОВ =====
-async function autoSaveConversation(userId, userMsg, aiReply) {
-  try {
-    const isImportant = userMsg.length > 100 ||
-      userMsg.match(/важно|запомни|ключевое|сохрани|критично|решение|план|идея|вывод/i);
-    if (isImportant) {
-      await supabase.from('knowledge').insert({
-        content: '[Диалог] ' + userMsg.substring(0, 120) + ' → ' + aiReply.substring(0, 180),
-        source: 'auto_dialog',
-        created_at: new Date().toISOString()
-      });
-    }
-  } catch (e) { console.log('autosave error:', e.message); }
-}
-
-// ===== ВЕБ-ПОИСК =====
-async function webSearch(query) {
-  const key = process.env.TAVILY_API_KEY;
-  if (!key) return null;
-  try {
-    const response = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: key, query: query, search_depth: 'basic', max_results: 4 })
-    });
-    const data = await response.json();
-    if (!data.results) return null;
-    return data.results.map(function(r) {
-      return '*' + r.title + '*\n' + r.content.substring(0, 250);
-    }).join('\n\n');
-  } catch (e) { return null; }
-}
-
-// ===== ВЫЗОВ AI =====
-async function callAI(messages, models) {
-  for (let i = 0; i < models.length; i++) {
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model: models[i], messages: messages })
-      });
-      const data = await response.json();
-      const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (text && text.length > 0) return { text: text, model: models[i].split('/')[1] };
-    } catch (e) { continue; }
-  }
-  return null;
-}
-
-// ===== ОТПРАВКА ДЛИННЫХ СООБЩЕНИЙ =====
-async function sendLong(ctx, text, options) {
-  const opts = options || {};
-  if (text.length <= 4096) {
-    return ctx.reply(text, opts);
-  }
-  const chunks = [];
-  let current = '';
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if ((current + lines[i] + '\n').length > 4000) {
-      chunks.push(current);
-      current = lines[i] + '\n';
-    } else {
-      current += lines[i] + '\n';
-    }
-  }
-  if (current) chunks.push(current);
-  for (let j = 0; j < chunks.length; j++) {
-    await ctx.reply(chunks[j], opts);
-  }
-}
-
-const mainMenu = Markup.keyboard([
-  ['📊 Статус', '🧠 База знаний'],
-  ['✅ Задача', '📋 Задачи'],
-  ['🔑 Ключи', '🤖 Агенты'],
-  ['🌳 Дерево', '📚 Знания'],
-  ['❓ Помощь']
-]).resize();
-
-// ===== СТАРТ =====
-bot.start((ctx) => {
-  if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied');
-  conversationHistory[ctx.from.id] = [];
-  ctx.reply(
-    '🤖 *SUS ONLINE v6.1*\n\n' +
-    'Архитектор, жду команд.\n' +
-    '🧠 Мозг: Claude Sonnet 4.5\n' +
-    '💾 Память: история + Supabase + автосохранение\n' +
-    '🎭 Режим: Авто-определение\n' +
-    '🔍 Поиск: /search [запрос]\n' +
-    '📄 Документы: /analyze\n' +
-    '💡 Идеи: /idea [тема]\n' +
-    '📅 Отчёты: /summary /weekly\n\n' +
-    '💬 Напиши что угодно — помогу!',
-    { parse_mode: 'Markdown', ...mainMenu }
-  );
-});
-
-// ===== СТАТУС =====
-bot.hears('📊 Статус', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const { data } = await supabase.from('ecosystem_status').select('*').order('updated_at', { ascending: false });
-  const items = data && data.length > 0 ? data : [
-    { component: 'Aureon Network', progress: 33 },
-    { component: 'VERITAS', progress: 25 },
-    { component: 'Veritas Studio', progress: 30 },
-    { component: 'AI SUS', progress: 98 },
-    { component: 'NFT система', progress: 35 },
-    { component: 'Digital Court', progress: 10 }
-  ];
-  let msg = '🌳 *LIBERTAS ECOSYSTEM:*\n\n';
-  items.forEach(function(item) {
-    const filled = Math.floor(item.progress / 10);
-    const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
-    msg += '*' + item.component + '*\n' + bar + ' ' + item.progress + '%\n\n';
-  });
-  const total = Math.round(items.reduce(function(s, i) { return s + i.progress; }, 0) / items.length);
-  msg += '━━━━━━━━━━\n🌍 *ОБЩАЯ: ' + total + '%*';
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-bot.hears('🧠 База знаний', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '*LIBERTAS KNOWLEDGE BASE:*\n\n' +
-    '🪙 AURA SPL токен Solana, эмиссия 1 млрд\n' +
-    '🏆 NFT: Explorer $5 → Sovereign $1500\n' +
-    '💰 Реферал: 4 уровня 10/5/2/1%\n' +
-    '🏛 Биржи: Труда, Активов, Реального сектора, Рекламы, P2P\n' +
-    '🤖 Агенты: Claude, DeepSeek, Perplexity, Grok, Mistral, Gemini',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.hears('🌳 Дерево', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '*🌱 КОРНИ:* Aureon Network L3 ZK-Rollup Solana\n\n' +
-    '*🪵 СТВОЛ:* VERITAS + Veritum Passport биометрия\n\n' +
-    '*🌿 ВЕТВЬ #1:* Veritas Studio — AI агентская студия\n\n' +
-    '*🌿 ВЕТВЬ #2:* AI SUS — ассистент Архитектора\n\n' +
-    '*🍃 ЛИСТЬЯ:* Digital Court Libertas',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.hears('🤖 Агенты', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const cur = userAgent[ctx.from.id] || 'auto';
-  ctx.reply(
-    '*🤖 АГЕНТЫ SUS:*\n\n' +
-    '• /agent sonnet — Claude Sonnet (умный)\n' +
-    '• /agent haiku — Claude Haiku (быстрый)\n' +
-    '• /agent gpt4o — GPT-4o (универсальный)\n' +
-    '• /agent deepseek — DeepSeek (технический)\n' +
-    '• /agent grok — Grok (стратегия)\n' +
-    '• /agent auto — автовыбор\n\n' +
-    'Текущий: *' + cur + '*\n\n' +
-    'Прямой вопрос к модели: /ask [модель] [вопрос]',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.hears('🔑 Ключи', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const mode = userMode[ctx.from.id] || 'auto';
-  const agent = userAgent[ctx.from.id] || 'auto';
-  ctx.reply(
-    '🔑 *СТАТУС СИСТЕМЫ:*\n\n' +
-    'Supabase: ' + (process.env.SUPABASE_URL ? '✅' : '❌') + '\n' +
-    'OpenRouter: ' + (process.env.OPENROUTER_API_KEY ? '✅' : '❌') + '\n' +
-    'Helius: ' + (process.env.HELIUS_API_KEY ? '✅' : '❌') + '\n' +
-    'Whisper: ' + (process.env.OPENAI_API_KEY ? '✅' : '❌') + '\n' +
-    'Tavily поиск: ' + (process.env.TAVILY_API_KEY ? '✅' : '❌') + '\n' +
-    'Webhook: ' + (WEBHOOK_URL ? '✅' : '⚠️ polling') + '\n\n' +
-    'Режим: *' + mode + '*\n' +
-    'Агент: *' + agent + '*\n' +
-    'Сообщений: ' + stats.messages + '\n' +
-    'Голосовых: ' + stats.voice + '\n' +
-    'Фото: ' + stats.photos + '\n' +
-    'Поисков: ' + stats.searches + '\n' +
-    'Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// ===== ЗАДАЧИ =====
-bot.hears('✅ Задача', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply('Напиши: /task текст задачи');
-});
-
-bot.command('task', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const task = ctx.message.text.replace('/task', '').trim();
-  if (!task) return ctx.reply('Напиши: /task описание задачи');
-  await supabase.from('tasks').insert({ description: task, status: 'pending', created_at: new Date().toISOString() });
-  ctx.reply('✅ *Задача сохранена:*\n"' + task + '"', { parse_mode: 'Markdown' });
-});
-
-bot.hears('📋 Задачи', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const { data } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(15);
-  let msg = '📋 *ЗАДАЧИ:*\n\n';
-  if (!data || !data.length) {
-    msg += '⏳ Generate Domain Railway\n⏳ Helius API ключ\n⏳ Phantom wallet devnet\n⏳ Юрисдикция компании\n⏳ UptimeRobot\n⏳ Tavily API ключ\n⏳ Whisper голосовые';
-  } else {
-    data.forEach(function(t) {
-      const e = t.status === 'done' ? '✅' : t.status === 'in_progress' ? '🔄' : '⏳';
-      msg += e + ' ' + t.description + '\n';
-    });
-  }
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-bot.command('done', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const text = ctx.message.text.replace('/done', '').trim();
-  if (!text) return ctx.reply('Напиши: /done текст задачи');
-  const { data } = await supabase.from('tasks').select('id, description').limit(20);
-  const task = data && data.find(function(t) {
-    return t.description.toLowerCase().includes(text.toLowerCase());
-  });
-  if (!task) return ctx.reply('❌ Задача не найдена: "' + text + '"');
-  await supabase.from('tasks').update({ status: 'done' }).eq('id', task.id);
-  ctx.reply('✅ Выполнено: "' + task.description + '"');
-});
-
-// ===== ПАМЯТЬ =====
-bot.command('learn', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const knowledge = ctx.message.text.replace('/learn', '').trim();
-  if (!knowledge) return ctx.reply('Формат: /learn тема: содержание');
-  const { error } = await supabase.from('knowledge').insert({
-    content: knowledge, source: 'architect', created_at: new Date().toISOString()
-  });
-  if (error) return ctx.reply('❌ Ошибка: ' + error.message);
-  ctx.reply('🧠 *Знание сохранено!*\n\n"' + knowledge.substring(0, 200) + '"', { parse_mode: 'Markdown' });
-});
-
-bot.command('recall', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const query = ctx.message.text.replace('/recall', '').trim();
-  if (!query) return ctx.reply('Формат: /recall ключевое слово');
-  const { data, error } = await supabase
-    .from('knowledge').select('*').ilike('content', '%' + query + '%')
-    .order('created_at', { ascending: false }).limit(5);
-  if (error) return ctx.reply('❌ Ошибка: ' + error.message);
-  if (!data || !data.length) return ctx.reply('❌ Не найдено: "' + query + '"');
-  let msg = '🔍 *Найдено по "' + query + '":*\n\n';
-  data.forEach(function(k, i) { msg += (i + 1) + '. ' + k.content.substring(0, 200) + '\n\n'; });
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-bot.command('forget', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const query = ctx.message.text.replace('/forget', '').trim();
-  if (!query) return ctx.reply('Формат: /forget ключевое слово');
-  const { data } = await supabase.from('knowledge').select('id, content').ilike('content', '%' + query + '%').limit(1);
-  if (!data || !data.length) return ctx.reply('❌ Не найдено: "' + query + '"');
-  await supabase.from('knowledge').delete().eq('id', data[0].id);
-  ctx.reply('🗑 *Удалено:*\n"' + data[0].content.substring(0, 100) + '"', { parse_mode: 'Markdown' });
-});
-
-bot.command('export', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const { data } = await supabase.from('knowledge').select('*').order('created_at', { ascending: false });
-  if (!data || !data.length) return ctx.reply('База знаний пуста');
-  let msg = '📤 *БАЗА ЗНАНИЙ (' + data.length + ' записей):*\n\n';
-  data.forEach(function(k, i) { msg += (i + 1) + '. [' + (k.source || 'architect') + '] ' + k.content.substring(0, 150) + '\n\n'; });
-  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
-});
-
-bot.hears('📚 Знания', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '📚 *ПАМЯТЬ SUS:*\n\n' +
-    '/learn тема: текст — сохранить\n' +
-    '/recall слово — найти\n' +
-    '/forget слово — удалить\n' +
-    '/export — выгрузить всё\n' +
-    '/clear — очистить историю чата',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.command('clear', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  conversationHistory[ctx.from.id] = [];
-  ctx.reply('🗑 История разговора очищена. Начинаем с чистого листа.');
-});
-
-// ===== АГЕНТ =====
-bot.command('agent', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const agent = ctx.message.text.replace('/agent', '').trim().toLowerCase();
-  if (!agent) return ctx.reply('Напиши /agent [имя]: sonnet, haiku, gpt4o, deepseek, grok, auto');
-  if (agent === 'auto') {
-    delete userAgent[ctx.from.id];
-    return ctx.reply('🔄 Агент: автовыбор (Claude Sonnet)');
-  }
-  if (!ALL_MODELS[agent]) return ctx.reply('❌ Доступны: sonnet, haiku, gpt4o, deepseek, grok, auto');
-  userAgent[ctx.from.id] = agent;
-  ctx.reply('✅ Агент переключён: *' + agent + '*', { parse_mode: 'Markdown' });
-});
-
-// ===== ПРЯМОЙ ВОПРОС К МОДЕЛИ =====
-bot.command('ask', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const args = ctx.message.text.replace('/ask', '').trim();
-  if (!args) return ctx.reply('Формат: /ask [модель] [вопрос]\nПример: /ask deepseek напиши Rust функцию');
-  const parts = args.split(' ');
-  const modelName = parts[0].toLowerCase();
-  const question = parts.slice(1).join(' ');
-  if (!question) return ctx.reply('Укажи вопрос после названия модели');
-  if (!ALL_MODELS[modelName]) return ctx.reply('❌ Доступны: sonnet, haiku, gpt4o, gpt, deepseek, grok, mistral');
-  await ctx.reply('🤖 Спрашиваю *' + modelName + '*...', { parse_mode: 'Markdown' });
-  const result = await callAI(
-    [{ role: 'system', content: BASE_PROMPT }, { role: 'user', content: question }],
-    [ALL_MODELS[modelName]]
-  );
-  if (result) {
-    await sendLong(ctx, result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
-  } else {
-    ctx.reply('❌ Модель ' + modelName + ' не ответила');
-  }
-});
-
-// ===== РЕЖИМ =====
-bot.command('mode', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const mode = ctx.message.text.replace('/mode', '').trim().toLowerCase();
-  if (!mode) {
-    const cur = userMode[ctx.from.id] || 'auto';
-    let msg = '🎭 *Режимы SUS:*\n\n';
-    Object.keys(MODES).forEach(function(m) {
-      msg += (m === cur ? '✅ ' : '') + '/mode ' + m + '\n' + MODES[m] + '\n\n';
-    });
-    return ctx.reply(msg, { parse_mode: 'Markdown' });
-  }
-  if (!MODES[mode]) return ctx.reply('❌ Доступны: auto, assistant, critic, coder, strategist, writer, analyst');
-  userMode[ctx.from.id] = mode;
-  conversationHistory[ctx.from.id] = [];
-  ctx.reply('✅ Режим: *' + mode + '*\n' + MODES[mode] + '\n\nИстория очищена.', { parse_mode: 'Markdown' });
-});
-
-// ===== НАПОМИНАНИЯ =====
-bot.command('remind', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const text = ctx.message.text.replace('/remind', '').trim();
-  if (!text) return ctx.reply('Форматы:\n/remind 30m текст\n/remind 2h текст\n/remind 1d текст');
-  const parts = text.split(' ');
-  const timeStr = parts[0].toLowerCase();
-  const reminder = parts.slice(1).join(' ');
-  if (!reminder) return ctx.reply('Укажи текст напоминания после времени');
-  let ms = 0;
-  if (timeStr.endsWith('m')) ms = parseInt(timeStr) * 60 * 1000;
-  else if (timeStr.endsWith('h')) ms = parseInt(timeStr) * 60 * 60 * 1000;
-  else if (timeStr.endsWith('d')) ms = parseInt(timeStr) * 24 * 60 * 60 * 1000;
-  else return ctx.reply('❌ Формат: 30m, 2h, 1d');
-  if (isNaN(ms) || ms <= 0) return ctx.reply('❌ Некорректное время');
-  reminders.push({ userId: ctx.from.id, text: reminder, time: Date.now() + ms });
-  const when = new Date(Date.now() + ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  ctx.reply('⏰ Напомню около ' + when + ':\n"' + reminder + '"');
-});
-
-bot.command('reminders', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const myReminders = reminders.filter(function(r) { return String(r.userId) === String(ctx.from.id); });
-  if (!myReminders.length) return ctx.reply('Нет активных напоминаний');
-  let msg = '⏰ *Активные напоминания:*\n\n';
-  myReminders.forEach(function(r, i) {
-    const when = new Date(r.time).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    msg += (i + 1) + '. ' + when + ' — ' + r.text + '\n';
-  });
-  ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-// ===== ВЕБ-ПОИСК =====
-bot.command('search', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const query = ctx.message.text.replace('/search', '').trim();
-  if (!query) return ctx.reply('Формат: /search твой запрос');
-  if (!process.env.TAVILY_API_KEY) {
-    return ctx.reply('❌ Требуется TAVILY_API_KEY\ntavily.com — 1000 запросов бесплатно\nДобавь в Railway Variables.');
-  }
-  stats.searches++;
-  await ctx.reply('🔍 Ищу: "' + query + '"...');
-  const results = await webSearch(query);
-  if (!results) return ctx.reply('❌ Поиск не дал результатов');
-  const result = await callAI([
-    { role: 'system', content: 'Кратко изложи ключевые факты из поисковых результатов. Отвечай на языке запроса.' },
-    { role: 'user', content: 'Запрос: ' + query + '\n\nРезультаты поиска:\n' + results }
-  ], DEFAULT_MODELS);
-  if (result) {
-    await sendLong(ctx, '🔍 *"' + query + '":*\n\n' + result.text, { parse_mode: 'Markdown' });
-  } else {
-    await sendLong(ctx, '📋 *Найдено:*\n\n' + results, { parse_mode: 'Markdown' });
-  }
-});
-
-// ===== АНАЛИЗ ДОКУМЕНТОВ =====
-bot.command('analyze', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '📄 *Анализ документов:*\n\n' +
-    'Отправь файл или текст с командой /analyze в подписи.\n\n' +
-    'Также можешь:\n' +
-    '1. Скопировать текст и написать мне прямо\n' +
-    '2. Отправить фото документа\n' +
-    '3. Написать /analyze и вставить текст ниже\n\n' +
-    '*Пример:* /analyze Проанализируй этот договор:\n[текст договора...]',
-    { parse_mode: 'Markdown' }
-  );
-  const textAfterCmd = ctx.message.text.replace('/analyze', '').trim();
-  if (textAfterCmd.length > 50) {
-    await ctx.reply('📄 Анализирую...');
-    const result = await callAI([
-      { role: 'system', content: BASE_PROMPT + '\nПроанализируй документ детально. Выдели ключевые пункты, риски, рекомендации.' },
-      { role: 'user', content: textAfterCmd }
-    ], DEFAULT_MODELS);
-    if (result) {
-      await sendLong(ctx, result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
-    }
-  }
-});
-
-// ===== ОБРАБОТКА ДОКУМЕНТОВ/ФАЙЛОВ =====
-bot.on('document', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const doc = ctx.message.document;
-  const caption = ctx.message.caption || '';
-  if (doc.mime_type === 'text/plain' || doc.file_name.endsWith('.txt') || doc.file_name.endsWith('.md')) {
-    await ctx.reply('📄 Читаю файл: ' + doc.file_name);
-    try {
-      const fileLink = await ctx.telegram.getFileLink(doc.file_id);
-      const response = await fetch(fileLink.href);
-      const text = await response.text();
-      const truncated = text.substring(0, 4000);
-      const prompt = caption || 'Проанализируй этот документ. Выдели главное, риски, выводы.';
-      const result = await callAI([
-        { role: 'system', content: BASE_PROMPT },
-        { role: 'user', content: prompt + '\n\nСодержимое файла "' + doc.file_name + '":\n\n' + truncated }
-      ], DEFAULT_MODELS);
-      if (result) {
-        await sendLong(ctx, '📄 *Анализ "' + doc.file_name + '":*\n\n' + result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
-      }
-    } catch (e) {
-      ctx.reply('❌ Ошибка чтения файла: ' + e.message);
-    }
-  } else {
-    ctx.reply('📎 Файл получен: *' + doc.file_name + '*\nПоддерживаются .txt и .md файлы для анализа.', { parse_mode: 'Markdown' });
-  }
-});
-
-// ===== ИДЕИ =====
-bot.command('idea', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const topic = ctx.message.text.replace('/idea', '').trim();
-  if (!topic) return ctx.reply('Формат: /idea тема\nПример: /idea монетизация Veritas Studio');
-  await ctx.reply('💡 Генерирую идеи: "' + topic + '"...');
-  const result = await callAI([
-    {
-      role: 'system',
-      content: BASE_PROMPT + '\nСгенерируй ровно 5 конкретных идей. Каждая: заголовок, описание 2-3 предложения, оценка потенциала (🔴 низкий / 🟡 средний / 🟢 высокий).'
-    },
-    { role: 'user', content: 'Придумай 5 идей для: ' + topic }
-  ], DEFAULT_MODELS);
-  if (result) {
-    await sendLong(ctx, '💡 *Идеи: "' + topic + '":*\n\n' + result.text + '\n\n_(' + result.model + ')_', { parse_mode: 'Markdown' });
-    await supabase.from('knowledge').insert({
-      content: 'Идеи по теме "' + topic + '": ' + result.text.substring(0, 300),
-      source: 'idea_generation',
-      created_at: new Date().toISOString()
-    });
-  } else {
-    ctx.reply('❌ Не удалось сгенерировать идеи');
-  }
-});
-
-// ===== ИТОГ ДНЯ =====
-bot.command('summary', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  await ctx.reply('📋 Составляю итог...');
-  const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(10);
-  const { data: knowledge } = await supabase.from('knowledge').select('content, source').order('created_at', { ascending: false }).limit(8);
-  const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
-  const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
-
-  let msg = '📊 *ИТОГ ДНЯ — SUS v6.1*\n\n';
-  msg += '✅ *Выполнено (' + done.length + '):*\n';
-  if (done.length) { done.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; }); }
-  else { msg += '• Нет\n'; }
-  msg += '\n⏳ *В очереди (' + pending.length + '):*\n';
-  if (pending.length) { pending.slice(0, 5).forEach(function(t) { msg += '• ' + t.description + '\n'; }); }
-  else { msg += '• Очередь пуста\n'; }
-  msg += '\n🧠 *Последние знания:*\n';
-  if (knowledge && knowledge.length) {
-    knowledge.slice(0, 4).forEach(function(k) {
-      msg += '• [' + (k.source || 'arch') + '] ' + k.content.substring(0, 80) + '\n';
-    });
-  }
-  msg += '\n📈 *Статистика сессии:*\n';
-  msg += '• Сообщений: ' + stats.messages + '\n';
-  msg += '• Голосовых: ' + stats.voice + '\n';
-  msg += '• Поисков: ' + stats.searches + '\n';
-  msg += '• Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.';
-  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
-});
-
-// ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (вручную) =====
-bot.command('weekly', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  await ctx.reply('📅 Составляю недельный отчёт...');
-  const { data: tasks } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(30);
-  const done = tasks ? tasks.filter(function(t) { return t.status === 'done'; }) : [];
-  const pending = tasks ? tasks.filter(function(t) { return t.status === 'pending'; }) : [];
-  const { data: eco } = await supabase.from('ecosystem_status').select('*');
-
-  const ecoItems = eco && eco.length > 0 ? eco : [
-    { component: 'Aureon Network', progress: 33 }, { component: 'VERITAS', progress: 25 },
-    { component: 'Veritas Studio', progress: 30 }, { component: 'AI SUS', progress: 98 },
-    { component: 'NFT система', progress: 35 }, { component: 'Digital Court', progress: 10 }
-  ];
-  const totalProgress = Math.round(ecoItems.reduce(function(s, i) { return s + i.progress; }, 0) / ecoItems.length);
-
-  const result = await callAI([
-    { role: 'system', content: BASE_PROMPT + '\nТы составляешь еженедельный стратегический отчёт. Будь конкретным и честным.' },
-    {
-      role: 'user',
-      content: 'Составь недельный отчёт LIBERTAS.\n\n' +
-        'Выполнено задач: ' + done.length + '\n' +
-        'Ожидает: ' + pending.length + '\n' +
-        'Общий прогресс экосистемы: ' + totalProgress + '%\n\n' +
-        'Задачи в очереди:\n' + pending.slice(0, 5).map(function(t) { return '- ' + t.description; }).join('\n') + '\n\n' +
-        'Дай: 1) оценку прогресса 2) топ-3 приоритета на следующую неделю 3) главный риск 4) рекомендацию'
-    }
-  ], DEFAULT_MODELS);
-
-  let msg = '📅 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ LIBERTAS*\n\n';
-  msg += '📊 Прогресс экосистемы: *' + totalProgress + '%*\n';
-  msg += '✅ Выполнено задач: ' + done.length + '\n';
-  msg += '⏳ В очереди: ' + pending.length + '\n\n';
-  if (result) msg += result.text;
-  await sendLong(ctx, msg, { parse_mode: 'Markdown' });
-});
-
-// ===== ПРОГРЕСС =====
-bot.command('progress', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  const args = ctx.message.text.replace('/progress', '').trim();
-  if (!args) return ctx.reply('Формат: /progress Компонент: 75\nПример: /progress AI SUS: 98');
-  const parts = args.split(':');
-  if (parts.length < 2) return ctx.reply('Формат: /progress Компонент: число');
-  const component = parts[0].trim();
-  const progress = parseInt(parts[1].trim());
-  if (isNaN(progress) || progress < 0 || progress > 100) return ctx.reply('❌ Число от 0 до 100');
-  const { data: existing } = await supabase.from('ecosystem_status').select('id').ilike('component', component).limit(1);
-  if (existing && existing.length > 0) {
-    await supabase.from('ecosystem_status').update({ progress: progress, updated_at: new Date().toISOString() }).eq('id', existing[0].id);
-  } else {
-    await supabase.from('ecosystem_status').insert({ component: component, progress: progress, updated_at: new Date().toISOString() });
-  }
-  ctx.reply('📊 *Обновлено:*\n' + component + ' → ' + progress + '%', { parse_mode: 'Markdown' });
-});
-
-// ===== БЮДЖЕТ =====
-bot.command('budget', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  try {
-    const response = await fetch('https://openrouter.ai/api/v1/auth/key', {
-      headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY }
-    });
-    const data = await response.json();
-    const used = data.data && data.data.usage ? Number(data.data.usage).toFixed(4) : '0.0000';
-    const limit = data.data && data.data.limit;
-    ctx.reply(
-      '💰 *БЮДЖЕТ OPENROUTER:*\n\n' +
-      'Потрачено: $' + used + '\n' +
-      'Лимит: ' + (limit === null || limit === undefined ? 'unlimited' : '$' + limit) + '\n\n' +
-      '📊 *СТАТИСТИКА SUS:*\n' +
-      'Сообщений: ' + stats.messages + '\n' +
-      'Голосовых: ' + stats.voice + '\n' +
-      'Поисков: ' + stats.searches + '\n' +
-      'Напоминаний: ' + reminders.length + '\n' +
-      'Аптайм: ' + Math.floor((Date.now() - stats.start_time) / 3600000) + ' ч.',
-      { parse_mode: 'Markdown' }
-    );
-  } catch (e) { ctx.reply('❌ Ошибка: ' + e.message); }
-});
-
-// ===== ТЕСТ AI =====
-bot.command('aitest', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  await ctx.reply('🔍 Тестирую все модели...');
-  const testModels = ['sonnet', 'haiku', 'gpt', 'deepseek', 'mistral'];
-  const results = [];
-  for (let j = 0; j < testModels.length; j++) {
-    const name = testModels[j];
-    try {
-      const start = Date.now();
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: ALL_MODELS[name], messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 })
-      });
-      const data = await response.json();
-      const ok = data.choices && data.choices[0] && data.choices[0].message;
-      const ms = Date.now() - start;
-      results.push((ok ? '✅' : '❌') + ' ' + name + ' (' + ms + 'ms)');
-    } catch (e) {
-      results.push('❌ ' + name + ': ' + e.message.substring(0, 25));
-    }
-  }
-  ctx.reply('📊 *Статус моделей:*\n\n' + results.join('\n'), { parse_mode: 'Markdown' });
-});
-
-// ===== ПОМОЩЬ =====
-bot.hears('❓ Помощь', (ctx) => {
-  if (!isAdmin(ctx)) return;
-  ctx.reply(
-    '📖 *SUS v6.1 — ВСЕ КОМАНДЫ:*\n\n' +
-    '*🧠 ПАМЯТЬ:*\n' +
-    '/learn [тема: текст]\n' +
-    '/recall [слово]\n' +
-    '/forget [слово]\n' +
-    '/export — вся база\n' +
-    '/clear — очистить чат\n\n' +
-    '*📝 ЗАДАЧИ:*\n' +
-    '/task [текст]\n' +
-    '/done [текст]\n\n' +
-    '*🎭 НАСТРОЙКА:*\n' +
-    '/mode — сменить режим\n' +
-    '/agent — сменить модель\n' +
-    '/ask [модель] [вопрос]\n\n' +
-    '*🛠 ИНСТРУМЕНТЫ:*\n' +
-    '/search [запрос] — веб\n' +
-    '/analyze [текст] — документ\n' +
-    '/idea [тема] — идеи\n' +
-    '/remind [30m/2h/1d] [текст]\n' +
-    '/reminders — список\n' +
-    '/progress [Компонент: %]\n\n' +
-    '*📊 ОТЧЁТЫ:*\n' +
-    '/summary — итог дня\n' +
-    '/weekly — недельный отчёт\n' +
-    '/budget — расходы\n' +
-    '/aitest — тест моделей\n\n' +
-    '📎 Отправь .txt/.md файл → анализ\n' +
-    '🖼 Отправь фото → анализ\n' +
-    '🎤 Голосовое → транскрипция + ответ\n\n' +
-    '💬 Любой текст → Claude Sonnet 4.5!',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// ===== ГОЛОСОВЫЕ =====
-bot.on('voice', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  if (!process.env.OPENAI_API_KEY) {
-    return ctx.reply('❌ Голосовые требуют OPENAI_API_KEY (Whisper API).\nДобавь в Railway Variables.');
-  }
-  stats.voice++;
-  await ctx.reply('🎤 Распознаю речь...');
-  try {
-    const fileLink = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
-    const audioResponse = await fetch(fileLink.href);
-    const audioBuffer = await audioResponse.arrayBuffer();
-    const formData = new FormData();
-    formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg');
-    formData.append('model', 'whisper-1');
-    const whisperResp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
-      body: formData
-    });
-    const whisperData = await whisperResp.json();
-    const transcribed = whisperData.text;
-    if (!transcribed) return ctx.reply('❌ Не удалось распознать речь');
-    await ctx.reply('🎤 *Распознано:* ' + transcribed, { parse_mode: 'Markdown' });
-    await processAIMessage(ctx, transcribed);
-  } catch (e) {
-    ctx.reply('❌ Ошибка голосового: ' + e.message);
-  }
-});
-
-// ===== ФОТО =====
-bot.on('photo', async (ctx) => {
-  if (!isAdmin(ctx)) return;
-  stats.photos++;
-  await ctx.reply('🖼 Анализирую изображение...');
-  try {
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-    const caption = ctx.message.caption || 'Что на изображении? Опиши подробно и дай оценку/рекомендации если уместно.';
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + process.env.OPENROUTER_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: ALL_MODELS.haiku,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: caption },
-            { type: 'image_url', image_url: { url: fileLink.href } }
-          ]
-        }]
-      })
-    });
-    const data = await response.json();
-    const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (text) {
-      await sendLong(ctx, text, { parse_mode: 'Markdown' });
-    } else {
-      ctx.reply('❌ Не удалось проанализировать изображение');
-    }
-  } catch (e) {
-    ctx.reply('❌ Ошибка анализа: ' + e.message);
-  }
-});
-
-// ===== ОСНОВНАЯ AI ФУНКЦИЯ =====
-async function processAIMessage(ctx, messageText) {
-  const userId = ctx.from.id;
-
-  // Rate limiting
-  const now = Date.now();
-  if (lastMessage[userId] && (now - lastMessage[userId]) < RATE_LIMIT_MS) {
-    return;
-  }
-  lastMessage[userId] = now;
-
-  stats.messages++;
-  addToHistory(userId, 'user', messageText);
-
-  const { data: memories } = await supabase.from('knowledge').select('content').limit(15);
-  let memoryContext = '';
-  if (memories && memories.length) {
-    memoryContext = '\n\nБаза знаний Архитектора:\n' +
-      memories.map(function(m) { return '- ' + m.content; }).join('\n');
-  }
-
-  const currentMode = userMode[userId] || 'auto';
-  const autoMode = currentMode === 'auto' ? detectMode(messageText) : currentMode;
-  const systemPrompt = getSystemPrompt(userId, autoMode) + memoryContext;
-
-  const history = getHistory(userId);
-  const models = getModels(userId);
-
-  const messages = [{ role: 'system', content: systemPrompt }]
-    .concat(history.slice(0, -1))
-    .concat([{ role: 'user', content: messageText }]);
-
-  const result = await callAI(messages, models);
-
-  if (result) {
-    addToHistory(userId, 'assistant', result.text);
-    await autoSaveConversation(userId, messageText, result.text);
-    const modeLabel = currentMode === 'auto' ? autoMode + ' (авто)' : currentMode;
-    const footer = '\n\n_(' + result.model + ' | ' + modeLabel + ')_';
-    await sendLong(ctx, result.text + footer, { parse_mode: 'Markdown' });
-  } else {
-    ctx.reply('❌ AI недоступен. Попробуй /aitest');
-  }
-}
-
-// ===== ТЕКСТ =====
-bot.on('text', async (ctx) => {
-  if (!isAdmin(ctx)) return ctx.reply('⛔ Access denied');
-  try {
-    await processAIMessage(ctx, ctx.message.text);
-  } catch (e) {
-    ctx.reply('❌ Ошибка: ' + e.message);
-  }
-});
-
-// ===== ЗАПУСК =====
-const server = http.createServer(function(req, res) {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok', version: '6.1',
-      uptime: Math.floor((Date.now() - stats.start_time) / 1000),
-      messages: stats.messages, reminders: reminders.length
-    }));
-    return;
-  }
-  if (WEBHOOK_URL) {
-    bot.webhookCallback('/webhook')(req, res);
-  } else {
-    res.writeHead(404); res.end();
-  }
-});
-server.listen(PORT, () => { console.log('SUS v6.1 server port ' + PORT); });
-
-if (WEBHOOK_URL) {
-  bot.telegram.setWebhook(WEBHOOK_URL + '/webhook');
-  console.log('SUS v6.1 WEBHOOK mode');
-} else {
-  bot.launch({ dropPendingUpdates: true });
-  console.log('SUS v6.1 ONLINE — Claude Sonnet + Все функции активны');
-}
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+"""
+VERITAS LIBERTAS — SUS Bot v3.0 AUTONOMOUS
+Railway Deploy-Ready · aiogram3 + OpenRouter + Supabase + APScheduler
+Autonomous jobs: morning/evening posts, weekly report, health check, easter egg
+"""
+import asyncio, json, logging, os, random, tempfile
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+import httpx
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from dotenv import load_dotenv
+try:
+    from supabase import create_client
+    SUPA_OK = True
+except:
+    SUPA_OK = False
+
+load_dotenv()
+
+# ═══ CONFIG ════════════════════════════════════════════════════════
+TG_TOKEN   = os.getenv("TELEGRAM_TOKEN","")
+TG_CH_RU   = os.getenv("TELEGRAM_CHANNEL_RU","")
+TG_CH_US   = os.getenv("TELEGRAM_CHANNEL_US","")
+ADMIN_ID   = int(os.getenv("ADMIN_CHAT_ID","0"))
+OR_KEY     = os.getenv("OPENROUTER_API_KEY","")
+SUPA_URL   = os.getenv("SUPABASE_URL","")
+SUPA_KEY   = os.getenv("SUPABASE_SERVICE_KEY","") or os.getenv("SUPABASE_KEY","")
+EL_KEY     = os.getenv("ELEVENLABS_API_KEY","")
+HEDRA_KEY  = os.getenv("HEDRA_API_KEY","")
+LATE_KEY   = os.getenv("LATE_API_KEY","")
+YT_RU      = os.getenv("YOUTUBE_TOKEN_RU","")
+YT_US      = os.getenv("YOUTUBE_TOKEN_US","")
+SPARK_SEC  = os.getenv("SPARK_INTERNAL_SECRET","")
+SITE       = "https://veritas-libertas.netlify.app"
+
+MODELS = [
+    "anthropic/claude-sonnet-4-5",
+    "x-ai/grok-3",
+    "google/gemini-2.0-flash-001",
+    "deepseek/deepseek-chat-v3-0324",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+FAST  = "anthropic/claude-haiku-4-5"
+SMART = "anthropic/claude-sonnet-4-5"
+
+SYSTEM = f"""Ты SUS — ИИ-интерфейс VERITAS LIBERTAS. Архитектор: Sergo.
+Помогаешь с: Genesis NFT ($30, Solana), AURA Token, SPARK, Studio, Aureon L3 ZK-Rollup.
+Стиль: умный, конкретный, ≤150 слов. Studio → {SITE}. Не выдумывай если не знаешь."""
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+log = logging.getLogger("sus")
+
+bot       = Bot(token=TG_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+dp        = Dispatcher()
+sched     = AsyncIOScheduler(timezone="UTC")
+supa      = create_client(SUPA_URL, SUPA_KEY) if (SUPA_OK and SUPA_URL and SUPA_KEY) else None
+history: dict[int,list] = {}
+
+# ═══ SUPABASE ══════════════════════════════════════════════════════
+async def sb(method:str, path:str, data:dict=None) -> list|bool:
+    if not SUPA_URL: return [] if method=="GET" else False
+    try:
+        headers = {"apikey":SUPA_KEY,"Authorization":f"Bearer {SUPA_KEY}","Content-Type":"application/json","Prefer":"return=minimal"}
+        async with httpx.AsyncClient(timeout=10) as c:
+            if method=="GET":
+                r = await c.get(f"{SUPA_URL}/rest/v1/{path}", headers=headers)
+                return r.json() if r.status_code==200 else []
+            elif method=="POST":
+                r = await c.post(f"{SUPA_URL}/rest/v1/{path}", headers=headers, json=data)
+                return r.status_code < 300
+            elif method=="PATCH":
+                table,qry = path.split("?",1)
+                r = await c.patch(f"{SUPA_URL}/rest/v1/{table}?{qry}", headers=headers, json=data)
+                return r.status_code < 300
+    except Exception as e:
+        log.debug(f"[SB] {e}")
+        return [] if method=="GET" else False
+
+# ═══ AI ENGINE ═════════════════════════════════════════════════════
+async def ai(msgs:list, model:str=None, max_t:int=600) -> str:
+    for m in ([model]+MODELS if model else MODELS):
+        if not m: continue
+        try:
+            async with httpx.AsyncClient(timeout=45) as c:
+                r = await c.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization":f"Bearer {OR_KEY}","HTTP-Referer":SITE,"X-Title":"VERITAS SUS"},
+                    json={"model":m,"max_tokens":max_t,"messages":msgs})
+                d = r.json()
+                if "choices" in d:
+                    log.info(f"[AI] ✓ {m}")
+                    return d["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            log.warning(f"[AI] {m}: {e}")
+    return "⚠️ AI недоступен. Попробуй позже."
+
+async def chat(uid:int, text:str) -> str:
+    history.setdefault(uid,[])
+    history[uid].append({"role":"user","content":text})
+    msgs = [{"role":"system","content":SYSTEM}] + history[uid][-10:]
+    reply = await ai(msgs)
+    history[uid].append({"role":"assistant","content":reply})
+    return reply
+
+async def gen_post(topic:str, lang:str="ru") -> dict:
+    p = f"""Создай Telegram-пост. Тема: "{topic}". Язык: {lang}.
+Хук первой строкой. 3-4 тезиса ценности. CTA: {SITE}/genesis.html. 5-7 хэштегов.
+JSON только: {{"caption":"...","hashtags":["..."]}}"""
+    raw = await ai([{"role":"user","content":p}], model=FAST, max_t=700)
+    try: return json.loads(raw.replace("```json","").replace("```","").strip())
+    except: return {"caption":raw,"hashtags":["#VERITAS","#AI","#Web3"]}
+
+async def gen_script(topic:str, lang:str="ru") -> str:
+    langs = {"ru":"русском","en":"English","es":"español"}
+    return await ai([{"role":"user","content":
+        f"""YouTube сценарий на {langs.get(lang,'русском')}: "{topic}". ~8 минут.
+Структура: ХOOK(30сек) → ОБЕЩАНИЕ(30сек) → 5 БЛОКОВ → [PP-ВСТАВКА: упомяни VERITAS органично 45сек] → CTA(30сек: {SITE}/genesis.html).
+Добавляй [ПАУЗА] между блоками."""}], model=SMART, max_t=2500)
+
+async def gen_meta(topic:str, lang:str="en") -> dict:
+    raw = await ai([{"role":"user","content":
+        f"""YouTube SEO. Topic: "{topic}". Lang: {lang}.
+JSON only: {{"title":"60-70 chars","description":"300 chars + CTA {SITE}/genesis.html","tags":["...×15"],"thumbnail_text":"4-6 words"}}"""}],
+        model=FAST, max_t=500)
+    try: return json.loads(raw.replace("```json","").replace("```","").strip())
+    except: return {"title":topic[:70],"description":f"{topic}\n\n🔮 {SITE}/genesis.html","tags":["AI","VERITAS","Web3"],"thumbnail_text":"VERITAS 2026"}
+
+async def trending(lang:str="ru") -> str:
+    return await ai([{"role":"user","content":
+        f"Дай ОДНУ горячую тему AI+крипто+tech которая получит максимум просмотров сегодня. Аудитория: {lang}. Только тема, одна строка."}],
+        model=FAST, max_t=60)
+
+# ═══ POSTING ═══════════════════════════════════════════════════════
+async def tg_post(ch:str, text:str) -> bool:
+    if not ch or not TG_TOKEN: return False
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={"chat_id":ch,"text":text,"parse_mode":"Markdown"})
+            return r.status_code==200
+    except Exception as e:
+        log.error(f"[TG] {e}"); return False
+
+async def late_post(video_url:str, caption:str, platforms:list) -> bool:
+    if not LATE_KEY or not video_url: return False
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post("https://api.getlate.dev/v1/posts",
+                headers={"Authorization":f"Bearer {LATE_KEY}","Content-Type":"application/json"},
+                json={"platforms":platforms,"media_url":video_url,"caption":caption})
+            ok = r.status_code < 300
+            log.info(f"[Late] {'✓' if ok else '✗'} {platforms}")
+            return ok
+    except Exception as e:
+        log.error(f"[Late] {e}"); return False
+
+# ═══ AUTONOMOUS JOBS ═══════════════════════════════════════════════
+async def job_morning():
+    """09:00 UTC — auto post RU + add to YT queue"""
+    log.info("[JOB] Morning post")
+    try:
+        topic = await trending("ru")
+        post  = await gen_post(topic,"ru")
+        cap   = post.get("caption","")
+        tags  = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:7])
+        ok    = await tg_post(TG_CH_RU, f"{cap}\n\n{tags}")
+        await sb("POST","events",{"type":"auto_morning","payload":json.dumps({"topic":topic,"ok":ok}),"created_at":datetime.now(timezone.utc).isoformat()})
+        log.info(f"[JOB] Morning: {'✓' if ok else '✗'} — {topic[:40]}")
+    except Exception as e: log.error(f"[JOB] Morning error: {e}")
+
+async def job_evening():
+    """18:00 UTC — auto post EN/US + queue YouTube"""
+    log.info("[JOB] Evening post")
+    try:
+        topic = await trending("en")
+        post  = await gen_post(topic,"en")
+        cap   = post.get("caption","")
+        tags  = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:6])
+        txt   = f"{cap}\n\n{tags}\n\n🔮 {SITE}/genesis.html"
+        ok_us = await tg_post(TG_CH_US, txt)
+        # Also post RU version
+        post_ru = await gen_post(topic,"ru")
+        ok_ru   = await tg_post(TG_CH_RU, post_ru.get("caption","") + f"\n\n🔮 {SITE}/genesis.html")
+        # Queue for YouTube
+        await sb("POST","veritas_tv_queue",{"topic_ru":topic,"topic_es":topic,"priority":7,"status":"pending","created_at":datetime.now(timezone.utc).isoformat()})
+        log.info(f"[JOB] Evening: RU={'✓' if ok_ru else '✗'} US={'✓' if ok_us else '✗'}")
+    except Exception as e: log.error(f"[JOB] Evening error: {e}")
+
+async def job_weekly():
+    """Mon 08:00 UTC — ecosystem report to admin"""
+    log.info("[JOB] Weekly report")
+    try:
+        wl  = await sb("GET","waitlist?select=id,tier") or []
+        nft = await sb("GET","nft_holdings?nft_tier=eq.genesis&select=id") or []
+        vid = await sb("GET","veritas_tv_videos?select=id&created_at=gte." +
+                       (datetime.now(timezone.utc)-timedelta(days=7)).isoformat()) or []
+        founders = sum(1 for w in wl if isinstance(w,dict) and w.get("tier")=="founder")
+        report = (
+            f"📊 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ VERITAS*\n`{datetime.now(timezone.utc).strftime('%d.%m.%Y')}`\n\n"
+            f"👥 Waitlist: *{len(wl)}* ({founders} founders)\n"
+            f"🪙 Genesis NFT: *{len(nft)}*/10,000\n"
+            f"🎬 Видео за неделю: *{len(vid)}*\n\n"
+            f"🌳 Ecosystem:\n• Studio: 72% • SUS: 75%\n• NFT+Shadow: 58% • TV: 60%\n• TOTAL: ~56%\n\n"
+            f"🔴 Блокеры: OÜ registration → 1office.eu\n⚡ {SITE}"
+        )
+        if ADMIN_ID: await bot.send_message(ADMIN_ID, report)
+        if TG_CH_RU: await tg_post(TG_CH_RU, report)
+        await sb("POST","daily_reports",{"report_date":datetime.now(timezone.utc).date().isoformat(),"channel":"weekly_admin","summary":json.dumps({"wl":len(wl),"nfts":len(nft),"vids":len(vid)}),"created_at":datetime.now(timezone.utc).isoformat()})
+    except Exception as e: log.error(f"[JOB] Weekly error: {e}")
+
+async def job_easter():
+    """Every 6h — post easter egg hint if new video"""
+    try:
+        vids = await sb("GET","veritas_tv_videos?order=created_at.desc&limit=1&status=eq.published") or []
+        if vids and isinstance(vids,list) and random.random()<0.15:
+            yt = vids[0].get("youtube_id_ru") or vids[0].get("youtube_id_us")
+            if yt and TG_CH_RU:
+                await tg_post(TG_CH_RU,
+                    f"🥚 *EASTER EGG*\n\nВ новом видео спрятано золотое дерево VERITAS.\nПервый кто найдёт и напишет тайм-код в Telegram — получает *50 SPARK*!\n\n🎬 https://youtu.be/{yt}")
+    except Exception as e: log.debug(f"[JOB] Easter: {e}")
+
+async def job_health():
+    """Every 30min — check services, alert admin"""
+    issues = []
+    checks = {"Supabase": SUPA_URL+"/rest/v1/", "OpenRouter":"https://openrouter.ai/api/v1/models"}
+    for name,url in checks.items():
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(url)
+                if r.status_code >= 500: issues.append(f"{name}: HTTP {r.status_code}")
+        except: issues.append(f"{name}: unreachable")
+    if issues and ADMIN_ID:
+        await bot.send_message(ADMIN_ID, "⚠️ *SUS Health Alert:*\n" + "\n".join(issues))
+
+# ═══ BOT HANDLERS ══════════════════════════════════════════════════
+r = Router(name="main")
+
+def is_admin(uid:int) -> bool:
+    return ADMIN_ID==0 or uid==ADMIN_ID
+
+@r.message(CommandStart())
+async def start(msg:Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🪙 Genesis NFT $30", url=f"{SITE}/genesis.html"),
+         InlineKeyboardButton(text="⚡ Studio",          url=f"{SITE}/studio.html")],
+        [InlineKeyboardButton(text="🏆 V-Score",         url=f"{SITE}/vscore.html"),
+         InlineKeyboardButton(text="📊 Dashboard",       url=f"{SITE}/dashboard.html")],
+        [InlineKeyboardButton(text="📺 VERITAS TV",      url=f"{SITE}/veritas-tv.html"),
+         InlineKeyboardButton(text="🌐 Ecosystem",       url=SITE)],
+    ])
+    await msg.answer(
+        f"🔮 *VERITAS LIBERTAS*\n\nЯ SUS — автономный ИИ экосистемы.\n\n"
+        f"Задай любой вопрос или выбери раздел ниже 👇",
+        reply_markup=kb)
+
+@r.message(Command("post"))
+async def cmd_post(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    args = msg.text.split(maxsplit=1)
+    topic = (await trending("ru")) if len(args)<2 or args[1]=="auto" else args[1]
+    await msg.answer(f"✍️ Генерирую: *{topic}*")
+    post = await gen_post(topic,"ru")
+    cap  = post.get("caption","")
+    tags = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:7])
+    full = f"{cap}\n\n{tags}"
+    ok_ru = await tg_post(TG_CH_RU, full) if TG_CH_RU else False
+    ok_us = await tg_post(TG_CH_US, f"📌 {topic}\n\n🔮 {SITE}/genesis.html") if TG_CH_US else False
+    await sb("POST","veritas_tv_queue",{"topic_ru":topic,"topic_es":topic,"priority":8,"status":"pending","created_at":datetime.now(timezone.utc).isoformat()})
+    await msg.answer(f"✅ RU: {'✓' if ok_ru else '⛔'} · US: {'✓' if ok_us else '⛔'} · YT: в очереди\n`{topic[:50]}`")
+
+@r.message(Command("script"))
+async def cmd_script(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    parts = msg.text.split(maxsplit=2)
+    topic = parts[1] if len(parts)>1 else "AI замена профессий 2026"
+    lang  = parts[2] if len(parts)>2 else "ru"
+    await msg.answer(f"📝 Пишу сценарий ({lang}): *{topic}*\n_(20-30 сек)_")
+    script = await gen_script(topic, lang)
+    if len(script) > 3800:
+        import os as _os
+        with tempfile.NamedTemporaryFile(mode='w',suffix='.txt',delete=False,encoding='utf-8') as f:
+            f.write(script); tmp=f.name
+        await bot.send_document(msg.chat.id, open(tmp,'rb'), caption=f"📝 Сценарий: {topic}")
+        _os.unlink(tmp)
+    else:
+        await msg.answer(f"```\n{script[:3800]}\n```")
+
+@r.message(Command("optimize"))
+async def cmd_optimize(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    parts = msg.text.split(maxsplit=2)
+    topic = parts[1] if len(parts)>1 else "AI 2026"
+    lang  = parts[2] if len(parts)>2 else "en"
+    meta  = await gen_meta(topic, lang)
+    await msg.answer(
+        f"✅ *YouTube Meta ({lang})*\n\n"
+        f"📌 `{meta.get('title','')}`\n\n"
+        f"📝 {meta.get('description','')[:250]}\n\n"
+        f"🏷 {', '.join(meta.get('tags',[])[:8])}\n"
+        f"🖼 `{meta.get('thumbnail_text','')}`")
+
+@r.message(Command("queue"))
+async def cmd_queue(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    pending = await sb("GET","veritas_tv_queue?status=eq.pending&order=priority.desc&limit=5") or []
+    pub     = await sb("GET","veritas_tv_videos?order=created_at.desc&limit=5") or []
+    lines   = ["📺 *TV Queue*\n"]
+    if pending:
+        lines.append(f"⏳ Pending ({len(pending)}):")
+        for q in pending[:3]: lines.append(f"  • `{q.get('topic_ru','?')[:40]}`")
+    if pub:
+        lines.append(f"\n📊 Published ({len(pub)} recent):")
+        for v in pub[:3]:
+            yt = v.get('youtube_id_ru') or '—'
+            lines.append(f"  • {v.get('topic_ru','?')[:30]}" + (f"\n    youtu.be/{yt}" if yt!='—' else ''))
+    await msg.answer("\n".join(lines))
+
+@r.message(Command("stats"))
+async def cmd_stats(msg:Message):
+    wl  = await sb("GET","waitlist?select=id,tier") or []
+    nft = await sb("GET","nft_holdings?nft_tier=eq.genesis&select=id") or []
+    founders = sum(1 for w in wl if isinstance(w,dict) and w.get("tier")=="founder")
+    await msg.answer(
+        f"📊 *VERITAS LIVE*\n\n"
+        f"👥 Waitlist: `{len(wl)}` ({founders} founders)\n"
+        f"🪙 Genesis NFT: `{len(nft)}`/10,000\n"
+        f"🌐 {SITE}")
+
+@r.message(Command("announce"))
+async def cmd_announce(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    text = msg.text.replace("/announce","",1).strip()
+    if not text: return await msg.answer("Usage: /announce [text]")
+    results = []
+    for name,ch in [("RU",TG_CH_RU),("US",TG_CH_US)]:
+        if ch: results.append(f"{'✓' if await tg_post(ch,text) else '✗'} {name}")
+    await msg.answer("📢 " + " · ".join(results) if results else "⛔ Нет каналов")
+
+@r.message(Command("spark"))
+async def cmd_spark(msg:Message):
+    if not is_admin(msg.from_user.id): return
+    parts = msg.text.split()
+    if len(parts)<3: return await msg.answer("Usage: /spark [user_id] [amount]")
+    uid,amount = parts[1],int(parts[2])
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(f"{SITE}/api/spark",
+                headers={"Content-Type":"application/json","x-spark-secret":SPARK_SEC},
+                json={"action":"credit","user_id":uid,"amount":amount,"reason":"admin_manual"})
+            d = r.json()
+        await msg.answer(f"⚡ {amount} SPARK → `{uid[:12]}...`\nБаланс: {d.get('balance','?')}" if d.get('ok') else f"✗ {d.get('error','unknown')}")
+    except Exception as e: await msg.answer(f"✗ {e}")
+
+@r.message(Command("us_channel"))
+async def cmd_us(msg:Message):
+    await msg.answer(
+        f"🇺🇸 *US CHANNEL SETUP*\n\n"
+        f"1⃣ Dolphin Anty: dolphin.ru.com (free)\n"
+        f"2⃣ US ISP Proxy: netnut.io ($10/mo)\n"
+        f"3⃣ Google аккаунт: smspva.com (~$3)\n"
+        f"4⃣ Канал: *Veritas AI Daily*, US timezone\n"
+        f"5⃣ OAuth2: console.cloud.google.com\n"
+        f"   → YouTube Data API v3 → Credentials\n"
+        f"6⃣ Env: `YOUTUBE_TOKEN_US` + `YOUTUBE_CHANNEL_US`\n\n"
+        f"📋 {SITE}/us-channel.html")
+
+@r.message(Command("help"))
+async def cmd_help(msg:Message):
+    admin = is_admin(msg.from_user.id)
+    base = "*SUS Bot v3.0*\n\n/start /stats /help\n"
+    adm  = "\n*Admin:*\n/post [topic|auto]\n/script [topic] [lang]\n/optimize [topic] [lang]\n/queue\n/announce [text]\n/spark [uid] [amount]\n/us_channel" if admin else ""
+    await msg.answer(base + adm)
+
+@r.message(F.text)
+async def handle(msg:Message):
+    if msg.text and msg.text.startswith("/"): return
+    if msg.chat.type != "private":
+        me = await bot.get_me()
+        if f"@{me.username}" not in (msg.text or ""): return
+    await bot.send_chat_action(msg.chat.id,"typing")
+    reply = await chat(msg.from_user.id, msg.text or "")
+    await msg.answer(reply)
+    asyncio.create_task(sb("POST","messages",{"user_id":str(msg.from_user.id),"content":(msg.text or "")[:500],"role":"user","created_at":datetime.now(timezone.utc).isoformat()}))
+
+# ═══ STARTUP ═══════════════════════════════════════════════════════
+async def on_startup():
+    log.info("=== SUS v3.0 AUTONOMOUS starting ===")
+    missing = [v for v in ["TELEGRAM_TOKEN","OPENROUTER_API_KEY"] if not os.getenv(v)]
+    if missing: log.error(f"MISSING: {missing}")
+
+    await bot.set_my_commands([
+        BotCommand(command="start",    description="Главное меню"),
+        BotCommand(command="stats",    description="Статистика экосистемы"),
+        BotCommand(command="post",     description="[Admin] Создать пост"),
+        BotCommand(command="script",   description="[Admin] Сценарий видео"),
+        BotCommand(command="optimize", description="[Admin] YouTube метаданные"),
+        BotCommand(command="queue",    description="[Admin] Очередь контента"),
+        BotCommand(command="announce", description="[Admin] Анонс в каналы"),
+        BotCommand(command="spark",    description="[Admin] Выдать SPARK"),
+        BotCommand(command="help",     description="Справка"),
+    ])
+
+    sched.add_job(job_morning, CronTrigger(hour=9,  minute=0),  id="morning", replace_existing=True)
+    sched.add_job(job_evening, CronTrigger(hour=18, minute=0),  id="evening", replace_existing=True)
+    sched.add_job(job_weekly,  CronTrigger(day_of_week="mon", hour=8, minute=0), id="weekly", replace_existing=True)
+    sched.add_job(job_easter,  CronTrigger(hour="*/6", minute=30), id="easter", replace_existing=True)
+    sched.add_job(job_health,  CronTrigger(minute="*/30"), id="health", replace_existing=True)
+    sched.start()
+    log.info(f"Scheduler: {len(sched.get_jobs())} jobs active")
+
+    if ADMIN_ID:
+        status = (
+            f"✅ *SUS v3.0 AUTONOMOUS запущен*\n\n"
+            f"⚙️ Jobs: morning·evening·weekly·easter·health\n"
+            f"🤖 Models: Claude→Grok→Gemini→DeepSeek→Llama\n"
+            f"🗄 Supabase: {'✓' if supa else '⚠️'}\n"
+            f"📺 Late API: {'✓' if LATE_KEY else '⚠️ set LATE_API_KEY'}\n"
+            f"▶️ YouTube RU: {'✓' if YT_RU else '⚠️ set YOUTUBE_TOKEN_RU'}\n"
+            f"🇺🇸 YouTube US: {'✓' if YT_US else '⚠️ set YOUTUBE_TOKEN_US'}\n\n"
+            f"🌐 {SITE}"
+        )
+        try: await bot.send_message(ADMIN_ID, status)
+        except Exception as e: log.warning(f"Startup notify: {e}")
+
+async def main():
+    dp.include_router(r)
+    dp.startup.register(on_startup)
+    await dp.start_polling(bot, allowed_updates=["message","callback_query"])
+
+if __name__ == "__main__":
+    asyncio.run(main())
