@@ -3,10 +3,8 @@
   "version": "3.0.0",
   "description": "VERITAS LIBERTAS — SUS Autonomous Bot",
   "main": "src/bot/index.js",
-  "type": "module",
   "scripts": {
-    "start": "node src/bot/index.js",
-    "dev": "node --watch src/bot/index.js"
+    "start": "node src/bot/index.js"
   },
   "dependencies": {
     "grammy": "^1.21.1",
