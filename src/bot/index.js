@@ -1,436 +1,382 @@
-"""
-VERITAS LIBERTAS — SUS Bot v3.0 AUTONOMOUS
-Railway Deploy-Ready · aiogram3 + OpenRouter + Supabase + APScheduler
-Autonomous jobs: morning/evening posts, weekly report, health check, easter egg
-"""
-import asyncio, json, logging, os, random, tempfile
-from datetime import datetime, timezone, timedelta
-from typing import Optional
-import httpx
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from dotenv import load_dotenv
-try:
-    from supabase import create_client
-    SUPA_OK = True
-except:
-    SUPA_OK = False
+/**
+ * VERITAS LIBERTAS — SUS Bot v3.0 AUTONOMOUS
+ * Node.js · grammy + node-cron + OpenRouter + Supabase
+ * Autonomous jobs: morning/evening posts, weekly report, health check
+ */
 
-load_dotenv()
+import { Bot, InlineKeyboard } from "grammy";
+import { createClient } from "@supabase/supabase-js";
+import cron from "node-cron";
+import fetch from "node-fetch";
+import * as dotenv from "dotenv";
+dotenv.config();
 
-# ═══ CONFIG ════════════════════════════════════════════════════════
-TG_TOKEN   = os.getenv("TELEGRAM_TOKEN","")
-TG_CH_RU   = os.getenv("TELEGRAM_CHANNEL_RU","")
-TG_CH_US   = os.getenv("TELEGRAM_CHANNEL_US","")
-ADMIN_ID   = int(os.getenv("ADMIN_CHAT_ID","0"))
-OR_KEY     = os.getenv("OPENROUTER_API_KEY","")
-SUPA_URL   = os.getenv("SUPABASE_URL","")
-SUPA_KEY   = os.getenv("SUPABASE_SERVICE_KEY","") or os.getenv("SUPABASE_KEY","")
-EL_KEY     = os.getenv("ELEVENLABS_API_KEY","")
-HEDRA_KEY  = os.getenv("HEDRA_API_KEY","")
-LATE_KEY   = os.getenv("LATE_API_KEY","")
-YT_RU      = os.getenv("YOUTUBE_TOKEN_RU","")
-YT_US      = os.getenv("YOUTUBE_TOKEN_US","")
-SPARK_SEC  = os.getenv("SPARK_INTERNAL_SECRET","")
-SITE       = "https://veritas-libertas.netlify.app"
+// ═══ CONFIG ════════════════════════════════════════════════════════
+const TG_TOKEN  = process.env.TELEGRAM_TOKEN || "";
+const TG_CH_RU  = process.env.TELEGRAM_CHANNEL_RU || "";
+const TG_CH_US  = process.env.TELEGRAM_CHANNEL_US || "";
+const ADMIN_ID  = parseInt(process.env.ADMIN_CHAT_ID || "0");
+const OR_KEY    = process.env.OPENROUTER_API_KEY || "";
+const SUPA_URL  = process.env.SUPABASE_URL || "";
+const SUPA_KEY  = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || "";
+const EL_KEY    = process.env.ELEVENLABS_API_KEY || "";
+const LATE_KEY  = process.env.LATE_API_KEY || "";
+const SITE      = "https://veritas-libertas.netlify.app";
 
-MODELS = [
-    "anthropic/claude-sonnet-4-5",
-    "x-ai/grok-3",
-    "google/gemini-2.0-flash-001",
-    "deepseek/deepseek-chat-v3-0324",
-    "meta-llama/llama-3.3-70b-instruct:free",
-]
-FAST  = "anthropic/claude-haiku-4-5"
-SMART = "anthropic/claude-sonnet-4-5"
+const MODELS = [
+  "anthropic/claude-sonnet-4-5",
+  "x-ai/grok-3",
+  "google/gemini-2.0-flash-001",
+  "deepseek/deepseek-chat-v3-0324",
+  "meta-llama/llama-3.3-70b-instruct:free",
+];
+const FAST  = "anthropic/claude-haiku-4-5";
+const SMART = "anthropic/claude-sonnet-4-5";
 
-SYSTEM = f"""Ты SUS — ИИ-интерфейс VERITAS LIBERTAS. Архитектор: Sergo.
+const SYSTEM = `Ты SUS — ИИ-интерфейс VERITAS LIBERTAS. Архитектор: Sergo.
 Помогаешь с: Genesis NFT ($30, Solana), AURA Token, SPARK, Studio, Aureon L3 ZK-Rollup.
-Стиль: умный, конкретный, ≤150 слов. Studio → {SITE}. Не выдумывай если не знаешь."""
+Стиль: умный, конкретный, ≤150 слов. Studio → ${SITE}. Не выдумывай если не знаешь.`;
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
-log = logging.getLogger("sus")
+// ═══ ECOSYSTEM STATUS ══════════════════════════════════════════════
+const ECO = {
+  "🪨 ГРУНТ · OÜ":           20,
+  "🌱 КОРНИ · Aureon":        47,
+  "🪵 СТВОЛ · Metaverse":     36,
+  "🌿 ВЕТВЬ1 · Studio":       74,
+  "🌿 ВЕТВЬ2 · SUS Bot":      90,
+  "🌸 ПОЧКИ · NFT+Shadow":    58,
+  "📺 TG · Каналы":           95,
+  "🍃 ЛИСТЬЯ · DigitalCourt": 18,
+};
 
-bot       = Bot(token=TG_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
-dp        = Dispatcher()
-sched     = AsyncIOScheduler(timezone="UTC")
-supa      = create_client(SUPA_URL, SUPA_KEY) if (SUPA_OK and SUPA_URL and SUPA_KEY) else None
-history: dict[int,list] = {}
+function ecoStatus() {
+  const lines = Object.entries(ECO).map(([k, v]) => {
+    const filled = Math.round(v / 10);
+    const bar = "█".repeat(filled) + "░".repeat(10 - filled);
+    return `${k}\n${bar} ${v}%`;
+  });
+  const total = Math.round(Object.values(ECO).reduce((a, b) => a + b, 0) / Object.keys(ECO).length);
+  return lines.join("\n\n") + `\n\n━━━━━━━━━━\n🌍 ОБЩАЯ: ${total}%`;
+}
 
-# ═══ SUPABASE ══════════════════════════════════════════════════════
-async def sb(method:str, path:str, data:dict=None) -> list|bool:
-    if not SUPA_URL: return [] if method=="GET" else False
-    try:
-        headers = {"apikey":SUPA_KEY,"Authorization":f"Bearer {SUPA_KEY}","Content-Type":"application/json","Prefer":"return=minimal"}
-        async with httpx.AsyncClient(timeout=10) as c:
-            if method=="GET":
-                r = await c.get(f"{SUPA_URL}/rest/v1/{path}", headers=headers)
-                return r.json() if r.status_code==200 else []
-            elif method=="POST":
-                r = await c.post(f"{SUPA_URL}/rest/v1/{path}", headers=headers, json=data)
-                return r.status_code < 300
-            elif method=="PATCH":
-                table,qry = path.split("?",1)
-                r = await c.patch(f"{SUPA_URL}/rest/v1/{table}?{qry}", headers=headers, json=data)
-                return r.status_code < 300
-    except Exception as e:
-        log.debug(f"[SB] {e}")
-        return [] if method=="GET" else False
+// ═══ SUPABASE ══════════════════════════════════════════════════════
+const supa = SUPA_URL && SUPA_KEY ? createClient(SUPA_URL, SUPA_KEY) : null;
 
-# ═══ AI ENGINE ═════════════════════════════════════════════════════
-async def ai(msgs:list, model:str=None, max_t:int=600) -> str:
-    for m in ([model]+MODELS if model else MODELS):
-        if not m: continue
-        try:
-            async with httpx.AsyncClient(timeout=45) as c:
-                r = await c.post("https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization":f"Bearer {OR_KEY}","HTTP-Referer":SITE,"X-Title":"VERITAS SUS"},
-                    json={"model":m,"max_tokens":max_t,"messages":msgs})
-                d = r.json()
-                if "choices" in d:
-                    log.info(f"[AI] ✓ {m}")
-                    return d["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            log.warning(f"[AI] {m}: {e}")
-    return "⚠️ AI недоступен. Попробуй позже."
+async function sbPost(table, data) {
+  if (!supa) return false;
+  try {
+    const { error } = await supa.from(table).insert(data);
+    return !error;
+  } catch { return false; }
+}
 
-async def chat(uid:int, text:str) -> str:
-    history.setdefault(uid,[])
-    history[uid].append({"role":"user","content":text})
-    msgs = [{"role":"system","content":SYSTEM}] + history[uid][-10:]
-    reply = await ai(msgs)
-    history[uid].append({"role":"assistant","content":reply})
-    return reply
+async function sbGet(table, query = "") {
+  if (!supa) return [];
+  try {
+    let q = supa.from(table).select("*");
+    const { data } = await q;
+    return data || [];
+  } catch { return []; }
+}
 
-async def gen_post(topic:str, lang:str="ru") -> dict:
-    p = f"""Создай Telegram-пост. Тема: "{topic}". Язык: {lang}.
-Хук первой строкой. 3-4 тезиса ценности. CTA: {SITE}/genesis.html. 5-7 хэштегов.
-JSON только: {{"caption":"...","hashtags":["..."]}}"""
-    raw = await ai([{"role":"user","content":p}], model=FAST, max_t=700)
-    try: return json.loads(raw.replace("```json","").replace("```","").strip())
-    except: return {"caption":raw,"hashtags":["#VERITAS","#AI","#Web3"]}
+// ═══ AI ENGINE ═════════════════════════════════════════════════════
+async function ai(messages, model = null, maxTokens = 600) {
+  const tryModels = model ? [model, ...MODELS] : MODELS;
+  for (const m of tryModels) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${OR_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": SITE,
+          "X-Title": "VERITAS SUS",
+        },
+        body: JSON.stringify({ model: m, max_tokens: maxTokens, messages }),
+      });
+      const d = await res.json();
+      if (d.choices?.[0]?.message?.content) {
+        console.log(`[AI] ✓ ${m}`);
+        return d.choices[0].message.content.trim();
+      }
+    } catch (e) {
+      console.warn(`[AI] ${m}: ${e.message}`);
+    }
+  }
+  return "⚠️ AI недоступен. Попробуй позже.";
+}
 
-async def gen_script(topic:str, lang:str="ru") -> str:
-    langs = {"ru":"русском","en":"English","es":"español"}
-    return await ai([{"role":"user","content":
-        f"""YouTube сценарий на {langs.get(lang,'русском')}: "{topic}". ~8 минут.
-Структура: ХOOK(30сек) → ОБЕЩАНИЕ(30сек) → 5 БЛОКОВ → [PP-ВСТАВКА: упомяни VERITAS органично 45сек] → CTA(30сек: {SITE}/genesis.html).
-Добавляй [ПАУЗА] между блоками."""}], model=SMART, max_t=2500)
+const history = {};
 
-async def gen_meta(topic:str, lang:str="en") -> dict:
-    raw = await ai([{"role":"user","content":
-        f"""YouTube SEO. Topic: "{topic}". Lang: {lang}.
-JSON only: {{"title":"60-70 chars","description":"300 chars + CTA {SITE}/genesis.html","tags":["...×15"],"thumbnail_text":"4-6 words"}}"""}],
-        model=FAST, max_t=500)
-    try: return json.loads(raw.replace("```json","").replace("```","").strip())
-    except: return {"title":topic[:70],"description":f"{topic}\n\n🔮 {SITE}/genesis.html","tags":["AI","VERITAS","Web3"],"thumbnail_text":"VERITAS 2026"}
+async function chat(uid, text) {
+  if (!history[uid]) history[uid] = [];
+  history[uid].push({ role: "user", content: text });
+  const msgs = [{ role: "system", content: SYSTEM }, ...history[uid].slice(-10)];
+  const reply = await ai(msgs);
+  history[uid].push({ role: "assistant", content: reply });
+  return reply;
+}
 
-async def trending(lang:str="ru") -> str:
-    return await ai([{"role":"user","content":
-        f"Дай ОДНУ горячую тему AI+крипто+tech которая получит максимум просмотров сегодня. Аудитория: {lang}. Только тема, одна строка."}],
-        model=FAST, max_t=60)
+async function genPost(topic, lang = "ru") {
+  const prompt = `Создай Telegram-пост. Тема: "${topic}". Язык: ${lang}.
+Хук первой строкой. 3-4 тезиса ценности. CTA: ${SITE}/genesis.html. 5-7 хэштегов.
+JSON только: {"caption":"...","hashtags":["..."]}`;
+  const raw = await ai([{ role: "user", content: prompt }], FAST, 700);
+  try {
+    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  } catch {
+    return { caption: raw, hashtags: ["#VERITAS", "#AI", "#Web3"] };
+  }
+}
 
-# ═══ POSTING ═══════════════════════════════════════════════════════
-async def tg_post(ch:str, text:str) -> bool:
-    if not ch or not TG_TOKEN: return False
-    try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                json={"chat_id":ch,"text":text,"parse_mode":"Markdown"})
-            return r.status_code==200
-    except Exception as e:
-        log.error(f"[TG] {e}"); return False
+async function genScript(topic, lang = "ru") {
+  const langs = { ru: "русском", en: "English", es: "español" };
+  return ai([{ role: "user", content:
+    `YouTube сценарий на ${langs[lang] || "русском"}: "${topic}". ~8 минут.
+Структура: ХOOK(30сек) → ОБЕЩАНИЕ(30сек) → 5 БЛОКОВ → [PP-ВСТАВКА: VERITAS органично 45сек] → CTA(30сек: ${SITE}/genesis.html).
+Добавляй [ПАУЗА] между блоками.`
+  }], SMART, 2500);
+}
 
-async def late_post(video_url:str, caption:str, platforms:list) -> bool:
-    if not LATE_KEY or not video_url: return False
-    try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post("https://api.getlate.dev/v1/posts",
-                headers={"Authorization":f"Bearer {LATE_KEY}","Content-Type":"application/json"},
-                json={"platforms":platforms,"media_url":video_url,"caption":caption})
-            ok = r.status_code < 300
-            log.info(f"[Late] {'✓' if ok else '✗'} {platforms}")
-            return ok
-    except Exception as e:
-        log.error(f"[Late] {e}"); return False
+async function trending(lang = "ru") {
+  return ai([{ role: "user", content:
+    `Дай ОДНУ горячую тему AI+крипто+tech которая получит максимум просмотров сегодня. Аудитория: ${lang}. Только тема, одна строка.`
+  }], FAST, 60);
+}
 
-# ═══ AUTONOMOUS JOBS ═══════════════════════════════════════════════
-async def job_morning():
-    """09:00 UTC — auto post RU + add to YT queue"""
-    log.info("[JOB] Morning post")
-    try:
-        topic = await trending("ru")
-        post  = await gen_post(topic,"ru")
-        cap   = post.get("caption","")
-        tags  = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:7])
-        ok    = await tg_post(TG_CH_RU, f"{cap}\n\n{tags}")
-        await sb("POST","events",{"type":"auto_morning","payload":json.dumps({"topic":topic,"ok":ok}),"created_at":datetime.now(timezone.utc).isoformat()})
-        log.info(f"[JOB] Morning: {'✓' if ok else '✗'} — {topic[:40]}")
-    except Exception as e: log.error(f"[JOB] Morning error: {e}")
+// ═══ POSTING ═══════════════════════════════════════════════════════
+async function tgPost(ch, text) {
+  if (!ch || !TG_TOKEN) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: ch, text, parse_mode: "Markdown" }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.error(`[TG] ${e.message}`);
+    return false;
+  }
+}
 
-async def job_evening():
-    """18:00 UTC — auto post EN/US + queue YouTube"""
-    log.info("[JOB] Evening post")
-    try:
-        topic = await trending("en")
-        post  = await gen_post(topic,"en")
-        cap   = post.get("caption","")
-        tags  = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:6])
-        txt   = f"{cap}\n\n{tags}\n\n🔮 {SITE}/genesis.html"
-        ok_us = await tg_post(TG_CH_US, txt)
-        # Also post RU version
-        post_ru = await gen_post(topic,"ru")
-        ok_ru   = await tg_post(TG_CH_RU, post_ru.get("caption","") + f"\n\n🔮 {SITE}/genesis.html")
-        # Queue for YouTube
-        await sb("POST","veritas_tv_queue",{"topic_ru":topic,"topic_es":topic,"priority":7,"status":"pending","created_at":datetime.now(timezone.utc).isoformat()})
-        log.info(f"[JOB] Evening: RU={'✓' if ok_ru else '✗'} US={'✓' if ok_us else '✗'}")
-    except Exception as e: log.error(f"[JOB] Evening error: {e}")
+// ═══ AUTONOMOUS JOBS ═══════════════════════════════════════════════
+async function jobMorning() {
+  console.log("[JOB] Morning post");
+  try {
+    const topic = await trending("ru");
+    const post  = await genPost(topic, "ru");
+    const tags  = (post.hashtags || []).slice(0, 7).map(t => `#${t.replace(/[# ]/g, "")}`).join(" ");
+    const ok    = await tgPost(TG_CH_RU, `${post.caption}\n\n${tags}`);
+    await sbPost("events", { type: "auto_morning", payload: JSON.stringify({ topic, ok }), created_at: new Date().toISOString() });
+    console.log(`[JOB] Morning: ${ok ? "✓" : "✗"} — ${topic.slice(0, 40)}`);
+  } catch (e) { console.error(`[JOB] Morning error: ${e.message}`); }
+}
 
-async def job_weekly():
-    """Mon 08:00 UTC — ecosystem report to admin"""
-    log.info("[JOB] Weekly report")
-    try:
-        wl  = await sb("GET","waitlist?select=id,tier") or []
-        nft = await sb("GET","nft_holdings?nft_tier=eq.genesis&select=id") or []
-        vid = await sb("GET","veritas_tv_videos?select=id&created_at=gte." +
-                       (datetime.now(timezone.utc)-timedelta(days=7)).isoformat()) or []
-        founders = sum(1 for w in wl if isinstance(w,dict) and w.get("tier")=="founder")
-        report = (
-            f"📊 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ VERITAS*\n`{datetime.now(timezone.utc).strftime('%d.%m.%Y')}`\n\n"
-            f"👥 Waitlist: *{len(wl)}* ({founders} founders)\n"
-            f"🪙 Genesis NFT: *{len(nft)}*/10,000\n"
-            f"🎬 Видео за неделю: *{len(vid)}*\n\n"
-            f"🌳 Ecosystem:\n• Studio: 72% • SUS: 75%\n• NFT+Shadow: 58% • TV: 60%\n• TOTAL: ~56%\n\n"
-            f"🔴 Блокеры: OÜ registration → 1office.eu\n⚡ {SITE}"
-        )
-        if ADMIN_ID: await bot.send_message(ADMIN_ID, report)
-        if TG_CH_RU: await tg_post(TG_CH_RU, report)
-        await sb("POST","daily_reports",{"report_date":datetime.now(timezone.utc).date().isoformat(),"channel":"weekly_admin","summary":json.dumps({"wl":len(wl),"nfts":len(nft),"vids":len(vid)}),"created_at":datetime.now(timezone.utc).isoformat()})
-    except Exception as e: log.error(f"[JOB] Weekly error: {e}")
+async function jobEvening() {
+  console.log("[JOB] Evening post");
+  try {
+    const topic   = await trending("en");
+    const postEn  = await genPost(topic, "en");
+    const postRu  = await genPost(topic, "ru");
+    const tagsEn  = (postEn.hashtags || []).slice(0, 6).map(t => `#${t.replace(/[# ]/g, "")}`).join(" ");
+    const okUs    = await tgPost(TG_CH_US, `${postEn.caption}\n\n${tagsEn}\n\n🔮 ${SITE}/genesis.html`);
+    const okRu    = await tgPost(TG_CH_RU, `${postRu.caption}\n\n🔮 ${SITE}/genesis.html`);
+    await sbPost("veritas_tv_queue", { topic_ru: topic, topic_es: topic, priority: 7, status: "pending", created_at: new Date().toISOString() });
+    console.log(`[JOB] Evening: RU=${okRu ? "✓" : "✗"} US=${okUs ? "✓" : "✗"}`);
+  } catch (e) { console.error(`[JOB] Evening error: ${e.message}`); }
+}
 
-async def job_easter():
-    """Every 6h — post easter egg hint if new video"""
-    try:
-        vids = await sb("GET","veritas_tv_videos?order=created_at.desc&limit=1&status=eq.published") or []
-        if vids and isinstance(vids,list) and random.random()<0.15:
-            yt = vids[0].get("youtube_id_ru") or vids[0].get("youtube_id_us")
-            if yt and TG_CH_RU:
-                await tg_post(TG_CH_RU,
-                    f"🥚 *EASTER EGG*\n\nВ новом видео спрятано золотое дерево VERITAS.\nПервый кто найдёт и напишет тайм-код в Telegram — получает *50 SPARK*!\n\n🎬 https://youtu.be/{yt}")
-    except Exception as e: log.debug(f"[JOB] Easter: {e}")
+async function jobWeekly() {
+  console.log("[JOB] Weekly report");
+  try {
+    const wl  = await sbGet("waitlist");
+    const nft = await sbGet("nft_holdings");
+    const founders = wl.filter(w => w.tier === "founder").length;
+    const report = `📊 *ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ VERITAS*\n\`${new Date().toLocaleDateString("ru")}\`\n\n` +
+      `👥 Waitlist: *${wl.length}* (${founders} founders)\n` +
+      `🪙 Genesis NFT: *${nft.length}*/10,000\n\n` +
+      `🌳 Ecosystem:\n${ecoStatus()}\n\n` +
+      `⚡ ${SITE}`;
+    if (ADMIN_ID) await bot.api.sendMessage(ADMIN_ID, report, { parse_mode: "Markdown" });
+    if (TG_CH_RU) await tgPost(TG_CH_RU, report);
+  } catch (e) { console.error(`[JOB] Weekly error: ${e.message}`); }
+}
 
-async def job_health():
-    """Every 30min — check services, alert admin"""
-    issues = []
-    checks = {"Supabase": SUPA_URL+"/rest/v1/", "OpenRouter":"https://openrouter.ai/api/v1/models"}
-    for name,url in checks.items():
-        try:
-            async with httpx.AsyncClient(timeout=5) as c:
-                r = await c.get(url)
-                if r.status_code >= 500: issues.append(f"{name}: HTTP {r.status_code}")
-        except: issues.append(f"{name}: unreachable")
-    if issues and ADMIN_ID:
-        await bot.send_message(ADMIN_ID, "⚠️ *SUS Health Alert:*\n" + "\n".join(issues))
+async function jobHealth() {
+  const checks = {
+    "Supabase": SUPA_URL + "/rest/v1/",
+    "OpenRouter": "https://openrouter.ai/api/v1/models",
+  };
+  const issues = [];
+  for (const [name, url] of Object.entries(checks)) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (r.status >= 500) issues.push(`${name}: HTTP ${r.status}`);
+    } catch { issues.push(`${name}: unreachable`); }
+  }
+  if (issues.length && ADMIN_ID) {
+    await bot.api.sendMessage(ADMIN_ID, `⚠️ *SUS Health Alert:*\n${issues.join("\n")}`, { parse_mode: "Markdown" });
+  }
+}
 
-# ═══ BOT HANDLERS ══════════════════════════════════════════════════
-r = Router(name="main")
+// ═══ BOT SETUP ═════════════════════════════════════════════════════
+const bot = new Bot(TG_TOKEN);
 
-def is_admin(uid:int) -> bool:
-    return ADMIN_ID==0 or uid==ADMIN_ID
+const isAdmin = (id) => ADMIN_ID === 0 || id === ADMIN_ID;
 
-@r.message(CommandStart())
-async def start(msg:Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪙 Genesis NFT $30", url=f"{SITE}/genesis.html"),
-         InlineKeyboardButton(text="⚡ Studio",          url=f"{SITE}/studio.html")],
-        [InlineKeyboardButton(text="🏆 V-Score",         url=f"{SITE}/vscore.html"),
-         InlineKeyboardButton(text="📊 Dashboard",       url=f"{SITE}/dashboard.html")],
-        [InlineKeyboardButton(text="📺 VERITAS TV",      url=f"{SITE}/veritas-tv.html"),
-         InlineKeyboardButton(text="🌐 Ecosystem",       url=SITE)],
-    ])
-    await msg.answer(
-        f"🔮 *VERITAS LIBERTAS*\n\nЯ SUS — автономный ИИ экосистемы.\n\n"
-        f"Задай любой вопрос или выбери раздел ниже 👇",
-        reply_markup=kb)
+bot.command("start", async (ctx) => {
+  const kb = new InlineKeyboard()
+    .url("🪙 Genesis NFT $30", `${SITE}/genesis.html`)
+    .url("⚡ Studio", `${SITE}/studio.html`).row()
+    .url("🏆 V-Score", `${SITE}/vscore.html`)
+    .url("📊 Dashboard", `${SITE}/dashboard.html`).row()
+    .url("📺 VERITAS TV", `${SITE}/veritas-tv.html`)
+    .url("🌐 Ecosystem", SITE);
+  await ctx.reply(
+    `🔮 *VERITAS LIBERTAS — SUS v3.0*\n\nАвтономный ИИ-интерфейс экосистемы.\n\n${ecoStatus()}`,
+    { parse_mode: "Markdown", reply_markup: kb }
+  );
+});
 
-@r.message(Command("post"))
-async def cmd_post(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    args = msg.text.split(maxsplit=1)
-    topic = (await trending("ru")) if len(args)<2 or args[1]=="auto" else args[1]
-    await msg.answer(f"✍️ Генерирую: *{topic}*")
-    post = await gen_post(topic,"ru")
-    cap  = post.get("caption","")
-    tags = " ".join(f"#{t.replace(' ','')}" for t in post.get("hashtags",[])[:7])
-    full = f"{cap}\n\n{tags}"
-    ok_ru = await tg_post(TG_CH_RU, full) if TG_CH_RU else False
-    ok_us = await tg_post(TG_CH_US, f"📌 {topic}\n\n🔮 {SITE}/genesis.html") if TG_CH_US else False
-    await sb("POST","veritas_tv_queue",{"topic_ru":topic,"topic_es":topic,"priority":8,"status":"pending","created_at":datetime.now(timezone.utc).isoformat()})
-    await msg.answer(f"✅ RU: {'✓' if ok_ru else '⛔'} · US: {'✓' if ok_us else '⛔'} · YT: в очереди\n`{topic[:50]}`")
+bot.command("eco", async (ctx) => {
+  await ctx.reply(`🌳 *ECOSYSTEM STATUS*\n\n${ecoStatus()}`, { parse_mode: "Markdown" });
+});
 
-@r.message(Command("script"))
-async def cmd_script(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    parts = msg.text.split(maxsplit=2)
-    topic = parts[1] if len(parts)>1 else "AI замена профессий 2026"
-    lang  = parts[2] if len(parts)>2 else "ru"
-    await msg.answer(f"📝 Пишу сценарий ({lang}): *{topic}*\n_(20-30 сек)_")
-    script = await gen_script(topic, lang)
-    if len(script) > 3800:
-        import os as _os
-        with tempfile.NamedTemporaryFile(mode='w',suffix='.txt',delete=False,encoding='utf-8') as f:
-            f.write(script); tmp=f.name
-        await bot.send_document(msg.chat.id, open(tmp,'rb'), caption=f"📝 Сценарий: {topic}")
-        _os.unlink(tmp)
-    else:
-        await msg.answer(f"```\n{script[:3800]}\n```")
+bot.command("stats", async (ctx) => {
+  const wl  = await sbGet("waitlist");
+  const nft = await sbGet("nft_holdings");
+  const founders = wl.filter(w => w.tier === "founder").length;
+  await ctx.reply(
+    `📊 *VERITAS LIVE*\n\n👥 Waitlist: \`${wl.length}\` (${founders} founders)\n🪙 Genesis NFT: \`${nft.length}\`/10,000\n\n🌐 ${SITE}`,
+    { parse_mode: "Markdown" }
+  );
+});
 
-@r.message(Command("optimize"))
-async def cmd_optimize(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    parts = msg.text.split(maxsplit=2)
-    topic = parts[1] if len(parts)>1 else "AI 2026"
-    lang  = parts[2] if len(parts)>2 else "en"
-    meta  = await gen_meta(topic, lang)
-    await msg.answer(
-        f"✅ *YouTube Meta ({lang})*\n\n"
-        f"📌 `{meta.get('title','')}`\n\n"
-        f"📝 {meta.get('description','')[:250]}\n\n"
-        f"🏷 {', '.join(meta.get('tags',[])[:8])}\n"
-        f"🖼 `{meta.get('thumbnail_text','')}`")
+bot.command("post", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const args = ctx.message.text.split(" ").slice(1).join(" ");
+  const topic = args === "auto" || !args ? await trending("ru") : args;
+  await ctx.reply(`✍️ Генерирую: *${topic}*`, { parse_mode: "Markdown" });
+  const post = await genPost(topic, "ru");
+  const tags = (post.hashtags || []).slice(0, 7).map(t => `#${t.replace(/[# ]/g, "")}`).join(" ");
+  const full = `${post.caption}\n\n${tags}`;
+  const okRu = TG_CH_RU ? await tgPost(TG_CH_RU, full) : false;
+  const okUs = TG_CH_US ? await tgPost(TG_CH_US, `📌 ${topic}\n\n🔮 ${SITE}/genesis.html`) : false;
+  await sbPost("veritas_tv_queue", { topic_ru: topic, priority: 8, status: "pending", created_at: new Date().toISOString() });
+  await ctx.reply(`✅ RU: ${okRu ? "✓" : "⛔"} · US: ${okUs ? "✓" : "⛔"} · YT: в очереди\n\`${topic.slice(0, 50)}\``, { parse_mode: "Markdown" });
+});
 
-@r.message(Command("queue"))
-async def cmd_queue(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    pending = await sb("GET","veritas_tv_queue?status=eq.pending&order=priority.desc&limit=5") or []
-    pub     = await sb("GET","veritas_tv_videos?order=created_at.desc&limit=5") or []
-    lines   = ["📺 *TV Queue*\n"]
-    if pending:
-        lines.append(f"⏳ Pending ({len(pending)}):")
-        for q in pending[:3]: lines.append(f"  • `{q.get('topic_ru','?')[:40]}`")
-    if pub:
-        lines.append(f"\n📊 Published ({len(pub)} recent):")
-        for v in pub[:3]:
-            yt = v.get('youtube_id_ru') or '—'
-            lines.append(f"  • {v.get('topic_ru','?')[:30]}" + (f"\n    youtu.be/{yt}" if yt!='—' else ''))
-    await msg.answer("\n".join(lines))
+bot.command("script", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const parts = ctx.message.text.split(" ");
+  const topic = parts[1] || "AI замена профессий 2026";
+  const lang  = parts[2] || "ru";
+  await ctx.reply(`📝 Пишу сценарий (${lang}): *${topic}*`, { parse_mode: "Markdown" });
+  const script = await genScript(topic, lang);
+  if (script.length > 3800) {
+    await ctx.reply("```\n" + script.slice(0, 3800) + "\n```\n_(продолжение — скажи /script снова)_", { parse_mode: "Markdown" });
+  } else {
+    await ctx.reply("```\n" + script + "\n```", { parse_mode: "Markdown" });
+  }
+});
 
-@r.message(Command("stats"))
-async def cmd_stats(msg:Message):
-    wl  = await sb("GET","waitlist?select=id,tier") or []
-    nft = await sb("GET","nft_holdings?nft_tier=eq.genesis&select=id") or []
-    founders = sum(1 for w in wl if isinstance(w,dict) and w.get("tier")=="founder")
-    await msg.answer(
-        f"📊 *VERITAS LIVE*\n\n"
-        f"👥 Waitlist: `{len(wl)}` ({founders} founders)\n"
-        f"🪙 Genesis NFT: `{len(nft)}`/10,000\n"
-        f"🌐 {SITE}")
+bot.command("announce", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const text = ctx.message.text.replace("/announce", "").trim();
+  if (!text) return ctx.reply("Usage: /announce [text]");
+  const results = [];
+  if (TG_CH_RU) results.push(`${await tgPost(TG_CH_RU, text) ? "✓" : "✗"} RU`);
+  if (TG_CH_US) results.push(`${await tgPost(TG_CH_US, text) ? "✓" : "✗"} US`);
+  await ctx.reply("📢 " + (results.join(" · ") || "⛔ Нет каналов"));
+});
 
-@r.message(Command("announce"))
-async def cmd_announce(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    text = msg.text.replace("/announce","",1).strip()
-    if not text: return await msg.answer("Usage: /announce [text]")
-    results = []
-    for name,ch in [("RU",TG_CH_RU),("US",TG_CH_US)]:
-        if ch: results.append(f"{'✓' if await tg_post(ch,text) else '✗'} {name}")
-    await msg.answer("📢 " + " · ".join(results) if results else "⛔ Нет каналов")
+bot.command("queue", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  const pending = await sbGet("veritas_tv_queue");
+  const lines = ["📺 *TV Queue*\n"];
+  if (pending.length) {
+    lines.push(`⏳ Pending (${pending.length}):`);
+    pending.slice(0, 5).forEach(q => lines.push(`  • \`${(q.topic_ru || "?").slice(0, 40)}\``));
+  } else {
+    lines.push("Очередь пуста");
+  }
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
 
-@r.message(Command("spark"))
-async def cmd_spark(msg:Message):
-    if not is_admin(msg.from_user.id): return
-    parts = msg.text.split()
-    if len(parts)<3: return await msg.answer("Usage: /spark [user_id] [amount]")
-    uid,amount = parts[1],int(parts[2])
-    try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(f"{SITE}/api/spark",
-                headers={"Content-Type":"application/json","x-spark-secret":SPARK_SEC},
-                json={"action":"credit","user_id":uid,"amount":amount,"reason":"admin_manual"})
-            d = r.json()
-        await msg.answer(f"⚡ {amount} SPARK → `{uid[:12]}...`\nБаланс: {d.get('balance','?')}" if d.get('ok') else f"✗ {d.get('error','unknown')}")
-    except Exception as e: await msg.answer(f"✗ {e}")
+bot.command("morning", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await ctx.reply("🌅 Запускаю утренний пост...");
+  await jobMorning();
+  await ctx.reply("✅ Готово");
+});
 
-@r.message(Command("us_channel"))
-async def cmd_us(msg:Message):
-    await msg.answer(
-        f"🇺🇸 *US CHANNEL SETUP*\n\n"
-        f"1⃣ Dolphin Anty: dolphin.ru.com (free)\n"
-        f"2⃣ US ISP Proxy: netnut.io ($10/mo)\n"
-        f"3⃣ Google аккаунт: smspva.com (~$3)\n"
-        f"4⃣ Канал: *Veritas AI Daily*, US timezone\n"
-        f"5⃣ OAuth2: console.cloud.google.com\n"
-        f"   → YouTube Data API v3 → Credentials\n"
-        f"6⃣ Env: `YOUTUBE_TOKEN_US` + `YOUTUBE_CHANNEL_US`\n\n"
-        f"📋 {SITE}/us-channel.html")
+bot.command("evening", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await ctx.reply("🌆 Запускаю вечерний пост...");
+  await jobEvening();
+  await ctx.reply("✅ Готово");
+});
 
-@r.message(Command("help"))
-async def cmd_help(msg:Message):
-    admin = is_admin(msg.from_user.id)
-    base = "*SUS Bot v3.0*\n\n/start /stats /help\n"
-    adm  = "\n*Admin:*\n/post [topic|auto]\n/script [topic] [lang]\n/optimize [topic] [lang]\n/queue\n/announce [text]\n/spark [uid] [amount]\n/us_channel" if admin else ""
-    await msg.answer(base + adm)
+bot.command("help", async (ctx) => {
+  const admin = isAdmin(ctx.from.id);
+  let text = `*SUS Bot v3.0 AUTONOMOUS*\n\n/start — главное меню\n/eco — статус экосистемы\n/stats — статистика\n/help — справка`;
+  if (admin) text += `\n\n*Admin:*\n/post [topic|auto]\n/script [topic] [lang]\n/announce [text]\n/queue\n/morning — тест утренний пост\n/evening — тест вечерний пост`;
+  await ctx.reply(text, { parse_mode: "Markdown" });
+});
 
-@r.message(F.text)
-async def handle(msg:Message):
-    if msg.text and msg.text.startswith("/"): return
-    if msg.chat.type != "private":
-        me = await bot.get_me()
-        if f"@{me.username}" not in (msg.text or ""): return
-    await bot.send_chat_action(msg.chat.id,"typing")
-    reply = await chat(msg.from_user.id, msg.text or "")
-    await msg.answer(reply)
-    asyncio.create_task(sb("POST","messages",{"user_id":str(msg.from_user.id),"content":(msg.text or "")[:500],"role":"user","created_at":datetime.now(timezone.utc).isoformat()}))
+bot.on("message:text", async (ctx) => {
+  if (ctx.message.text.startsWith("/")) return;
+  if (ctx.chat.type !== "private") {
+    const me = await bot.api.getMe();
+    if (!ctx.message.text.includes(`@${me.username}`)) return;
+  }
+  await ctx.replyWithChatAction("typing");
+  const reply = await chat(ctx.from.id, ctx.message.text);
+  await ctx.reply(reply, { parse_mode: "Markdown" }).catch(() => ctx.reply(reply));
+  await sbPost("messages", {
+    user_id: String(ctx.from.id),
+    content: ctx.message.text.slice(0, 500),
+    role: "user",
+    created_at: new Date().toISOString(),
+  });
+});
 
-# ═══ STARTUP ═══════════════════════════════════════════════════════
-async def on_startup():
-    log.info("=== SUS v3.0 AUTONOMOUS starting ===")
-    missing = [v for v in ["TELEGRAM_TOKEN","OPENROUTER_API_KEY"] if not os.getenv(v)]
-    if missing: log.error(f"MISSING: {missing}")
+// ═══ STARTUP ═══════════════════════════════════════════════════════
+async function main() {
+  console.log("=== SUS v3.0 AUTONOMOUS starting ===");
 
-    await bot.set_my_commands([
-        BotCommand(command="start",    description="Главное меню"),
-        BotCommand(command="stats",    description="Статистика экосистемы"),
-        BotCommand(command="post",     description="[Admin] Создать пост"),
-        BotCommand(command="script",   description="[Admin] Сценарий видео"),
-        BotCommand(command="optimize", description="[Admin] YouTube метаданные"),
-        BotCommand(command="queue",    description="[Admin] Очередь контента"),
-        BotCommand(command="announce", description="[Admin] Анонс в каналы"),
-        BotCommand(command="spark",    description="[Admin] Выдать SPARK"),
-        BotCommand(command="help",     description="Справка"),
-    ])
+  if (!TG_TOKEN) { console.error("MISSING: TELEGRAM_TOKEN"); process.exit(1); }
+  if (!OR_KEY)   console.warn("WARNING: OPENROUTER_API_KEY not set");
 
-    sched.add_job(job_morning, CronTrigger(hour=9,  minute=0),  id="morning", replace_existing=True)
-    sched.add_job(job_evening, CronTrigger(hour=18, minute=0),  id="evening", replace_existing=True)
-    sched.add_job(job_weekly,  CronTrigger(day_of_week="mon", hour=8, minute=0), id="weekly", replace_existing=True)
-    sched.add_job(job_easter,  CronTrigger(hour="*/6", minute=30), id="easter", replace_existing=True)
-    sched.add_job(job_health,  CronTrigger(minute="*/30"), id="health", replace_existing=True)
-    sched.start()
-    log.info(f"Scheduler: {len(sched.get_jobs())} jobs active")
+  // Autonomous jobs schedule
+  // 09:00 UTC daily — morning post RU
+  cron.schedule("0 9 * * *",   jobMorning, { timezone: "UTC" });
+  // 18:00 UTC daily — evening post RU+US
+  cron.schedule("0 18 * * *",  jobEvening, { timezone: "UTC" });
+  // Monday 08:00 UTC — weekly report
+  cron.schedule("0 8 * * 1",   jobWeekly,  { timezone: "UTC" });
+  // Every 30min — health check
+  cron.schedule("*/30 * * * *", jobHealth);
 
-    if ADMIN_ID:
-        status = (
-            f"✅ *SUS v3.0 AUTONOMOUS запущен*\n\n"
-            f"⚙️ Jobs: morning·evening·weekly·easter·health\n"
-            f"🤖 Models: Claude→Grok→Gemini→DeepSeek→Llama\n"
-            f"🗄 Supabase: {'✓' if supa else '⚠️'}\n"
-            f"📺 Late API: {'✓' if LATE_KEY else '⚠️ set LATE_API_KEY'}\n"
-            f"▶️ YouTube RU: {'✓' if YT_RU else '⚠️ set YOUTUBE_TOKEN_RU'}\n"
-            f"🇺🇸 YouTube US: {'✓' if YT_US else '⚠️ set YOUTUBE_TOKEN_US'}\n\n"
-            f"🌐 {SITE}"
-        )
-        try: await bot.send_message(ADMIN_ID, status)
-        except Exception as e: log.warning(f"Startup notify: {e}")
+  console.log("[CRON] 4 jobs scheduled: morning·evening·weekly·health");
 
-async def main():
-    dp.include_router(r)
-    dp.startup.register(on_startup)
-    await dp.start_polling(bot, allowed_updates=["message","callback_query"])
+  // Notify admin on startup
+  if (ADMIN_ID && TG_TOKEN) {
+    try {
+      const status =
+        `✅ *SUS v3.0 AUTONOMOUS запущен*\n\n` +
+        `⚙️ Jobs: morning(09:00)·evening(18:00)·weekly(Mon 08:00)·health(30min)\n` +
+        `🤖 AI: Claude→Grok→Gemini→DeepSeek→Llama\n` +
+        `🗄 Supabase: ${supa ? "✓" : "⚠️"}\n` +
+        `📺 Late API: ${LATE_KEY ? "✓" : "⚠️ set LATE_API_KEY"}\n\n` +
+        `📊 Ecosystem:\n${ecoStatus()}\n\n` +
+        `🌐 ${SITE}`;
+      await bot.api.sendMessage(ADMIN_ID, status, { parse_mode: "Markdown" });
+    } catch (e) { console.warn(`Startup notify: ${e.message}`); }
+  }
 
-if __name__ == "__main__":
-    asyncio.run(main())
+  await bot.start();
+}
+
+main().catch(console.error);
